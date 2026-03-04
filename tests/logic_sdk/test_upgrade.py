@@ -2,6 +2,7 @@ import pytest
 
 from logic.upgrade import production_up, defence_up, movement_up, tech_update
 from logic.gamedata import MainGenerals, SubGenerals, Farmer
+import logic.constant as constant
 
 
 def test_production_up_farmer_and_generals(plain_state):
@@ -26,18 +27,24 @@ def test_production_up_farmer_and_generals(plain_state):
     s.coin[0] = 200
     assert production_up([2, 2], s, 0) is True
     assert main.produce_level == 2
+    # cost should have been halved; check coin just dropped
+    assert s.coin[0] == 200 - constant.lieutenant_production_T1 // 2
     assert production_up([2, 2], s, 0) is True
     assert main.produce_level == 4
+    assert s.coin[0] == 200 - constant.lieutenant_production_T1 // 2 - constant.lieutenant_production_T2 // 2
     assert production_up([2, 2], s, 0) is False
 
-    # Sub general full cost path
+    # Sub general full cost path. need plenty of coins since upgrade
+    # costs are now 60 and 200 per level.
     sub = place_general(s, "sub", 3, 3, 0)
     sub.produce_level = 1
-    s.coin[0] = 200
+    s.coin[0] = 500
     assert production_up([3, 3], s, 0) is True
     assert sub.produce_level == 2
+    assert s.coin[0] == 500 - constant.lieutenant_production_T1
     assert production_up([3, 3], s, 0) is True
     assert sub.produce_level == 4
+    assert s.coin[0] == 500 - constant.lieutenant_production_T1 - constant.lieutenant_production_T2
     assert production_up([3, 3], s, 0) is False
 
 
@@ -66,9 +73,9 @@ def test_defence_up_all_types(plain_state):
     assert main.defense_level == 3
     assert defence_up([2, 2], s, 0) is False
 
-    # Sub general 1 -> 2 -> 3
+    # Sub general 1 -> 2 -> 3 (need more coins due to higher costs)
     sub = place_general(s, "sub", 3, 3, 0)
-    s.coin[0] = 200
+    s.coin[0] = 500
     sub.defense_level = 1
     assert defence_up([3, 3], s, 0) is True
     assert sub.defense_level == 2

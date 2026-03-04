@@ -31,6 +31,8 @@ def test_bomb_effects_on_area(plain_state):
     s.board[4][4].army = 3
 
     assert bomb(s, [5, 5], 0) is True
+    # counter increments
+    assert hasattr(s, "superweapon_used") and s.superweapon_used[0] == 1
     # Center main general cell halves army
     assert s.board[5][5].army == 5
     # Sub general cell becomes neutral and general removed
@@ -45,6 +47,7 @@ def test_strengthen_and_timestop_activation(plain_state):
     s = plain_state
     unlock_and_ready(s, 0)
     assert strengthen(s, [3, 3], 0) is True
+    assert hasattr(s, "superweapon_used") and s.superweapon_used[0] == 1
     assert any(w.type == WeaponType.ATTACK_ENHANCE for w in s.active_super_weapon)
     # CD set
     assert s.super_weapon_cd[0] > 0
@@ -52,6 +55,7 @@ def test_strengthen_and_timestop_activation(plain_state):
     # Prepare time stop after cd resets
     s.super_weapon_cd[0] = 0
     assert timestop(s, [2, 2], 0) is True
+    assert hasattr(s, "superweapon_used") and s.superweapon_used[0] == 2
     assert any(w.type == WeaponType.TIME_STOP for w in s.active_super_weapon)
 
 
@@ -63,6 +67,7 @@ def test_tp_transfers_army_and_sets_weapon(plain_state):
     s.board[1][1].army = 5
     # destination is neutral
     assert tp(s, [1, 1], [1, 2], 0) is True
+    assert hasattr(s, "superweapon_used") and s.superweapon_used[0] == 1
     assert s.board[1][1].army == 1
     assert s.board[1][2].player == 0
     assert s.board[1][2].army == 4

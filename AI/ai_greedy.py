@@ -4,6 +4,7 @@ from logic.gamedata import Direction
 from logic.gamestate import GameState
 from logic.constant import row, col
 from logic.computation import compute_attack, compute_defence
+from logic.map import PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP
 
 
 def move_army_op(position: list[int], direction: Direction, num: int) -> List[int]:
@@ -18,7 +19,35 @@ def _find_main(state: GameState, player: int):
 
 
 def policy(round_idx: int, my_seat: int, state: GameState) -> list[list[int]]:
-    """Greedy adjacent capture baseline."""
+    """Greedy baseline enhanced with ant interception.
+
+    - 如果有敌方蚂蚁靠近自己的基地（距离 ≤2），
+      即刻从主将处派出最多 3 军前往拦截。
+    - 否则退回到原始的邻格贪心占领逻辑。
+    """
+    # 优先处理附近的敌蚂蚁
+    base = PLAYER_0_BASE_CAMP if my_seat == 0 else PLAYER_1_BASE_CAMP
+    for ant in getattr(state, "ants", []):
+        if ant.player != my_seat:
+            # 使用地图提供的距离函数
+            dist = state.map.distance(ant.pos, base)
+            if dist <= 2:
+                g = _find_main(state, my_seat)
+                if g:
+                    x, y = g.position
+                    if ant.pos[0] < x:
+                        d = Direction.UP
+                    elif ant.pos[0] > x:
+                        d = Direction.DOWN
+                    elif ant.pos[1] < y:
+                        d = Direction.LEFT
+                    else:
+                        d = Direction.RIGHT
+                    army_here = state.board[x][y].army
+                    if army_here > 1:
+                        num = min(3, army_here - 1)
+                        return [move_army_op([x, y], d, num), [8]]
+    # 回退到原始贪心占领逻辑
     ops: list[list[int]] = []
     g = _find_main(state, my_seat)
     if not g:

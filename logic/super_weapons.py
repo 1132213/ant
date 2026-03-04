@@ -65,6 +65,9 @@ def bomb(gamestate, location: list[int, int], player: int) -> bool:
             SuperWeapon(WeaponType(0), player, 0, 5, location)
         )
         gamestate.super_weapon_cd[player] = use_cd
+        # record usage for tiebreaker
+        if hasattr(gamestate, "superweapon_used"):
+            gamestate.superweapon_used[player] += 1
 
         replay = get_single_round_replay(
             gamestate, [], player, [6, 1, location[0], location[1]]
@@ -94,6 +97,8 @@ def strengthen(gamestate, location: list[int, int], player: int) -> bool:
         weapon = SuperWeapon(WeaponType(1), player, 5, 5, location)
         gamestate.active_super_weapon.append(weapon)
         gamestate.super_weapon_cd[player] = use_cd
+        if hasattr(gamestate, "superweapon_used"):
+            gamestate.superweapon_used[player] += 1
 
         replay = get_single_round_replay(
             gamestate, [], player, [6, 2, location[0], location[1]]
@@ -143,6 +148,8 @@ def tp(gamestate, start: list[int, int], to: list[int, int], player: int) -> boo
         gamestate.super_weapon_cd[player] = use_cd
         weapon = SuperWeapon(WeaponType(2), player, 2, 2, to)
         gamestate.active_super_weapon.append(weapon)
+        if hasattr(gamestate, "superweapon_used"):
+            gamestate.superweapon_used[player] += 1
         replay = get_single_round_replay(
             gamestate,
             [[x_st, y_st], [x_to, y_to]],
@@ -173,6 +180,8 @@ def timestop(gamestate, location: list[int, int], player: int) -> bool:
         )
         gamestate.active_super_weapon.append(weapon)
         gamestate.super_weapon_cd[player] = use_cd
+        if hasattr(gamestate, "superweapon_used"):
+            gamestate.superweapon_used[player] += 1
 
         replay = get_single_round_replay(gamestate, [], player, [6, 4, x, y])
         with open(gamestate.replay_file, "a") as f:

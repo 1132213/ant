@@ -56,4 +56,8 @@ def execute_single_command(
     elif command == 7:
         # print("call generals", params)
         return call_generals(state, player, params)
+    elif command == 13:
+        # downgrade or demolish tower by ID
+        # params[0] should be tower id
+        return downgrade_tower(state, player, params[0])
     return False

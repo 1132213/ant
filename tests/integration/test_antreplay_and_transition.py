@@ -3,6 +3,7 @@ import pytest
 
 from logic.gamestate import GameState, update_round
 from logic.gamedata import CellType, MainGenerals
+from logic.ant import Ant
 
 
 def _reset_plain(state: GameState):
@@ -71,27 +72,29 @@ def test_transition_and_ant_replay_logging(tmp_path, seed):
         {"args": -1, "id": -1, "pos": {"x": -1, "y": -1}, "type": 8},
     ]
 
-    # Build the exact expected round_state for this scenario
+    # Build the expected state after one round of the new ant game logic.
+    # two ants will have been spawned (one per main general) with default HP.
+    from logic.map import PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP
     expected_ants = [
         {
             "age": 0,
-            "hp": 3,  # main (1,1) army 2 -> +1 production
+            "hp": 10,
             "id": 0,
             "level": 0,
             "move": -1,
             "player": 0,
-            "pos": {"x": 1, "y": 1},
-            "status": 0,
+            "pos": {"x": PLAYER_0_BASE_CAMP[0], "y": PLAYER_0_BASE_CAMP[1]},
+            "status": Ant.Status.Alive,
         },
         {
             "age": 0,
-            "hp": 5,  # main (3,3) army 4 -> +1 production
+            "hp": 10,
             "id": 1,
             "level": 0,
             "move": -1,
             "player": 1,
-            "pos": {"x": 3, "y": 3},
-            "status": 0,
+            "pos": {"x": PLAYER_1_BASE_CAMP[0], "y": PLAYER_1_BASE_CAMP[1]},
+            "status": Ant.Status.Alive,
         },
     ]
     expected_towers = [
@@ -101,18 +104,16 @@ def test_transition_and_ant_replay_logging(tmp_path, seed):
 
     rs = first.get("round_state")
     assert rs["coins"] == [0, 0]
-    assert rs["camps"] == [3, 5]
+    # base camps are independent values now
+    assert rs["camps"] == [50, 50]
     assert rs["speedLv"] == [2, 2]
     assert rs["anthpLv"] == [0, 0]
     assert rs["winner"] == -1
     # Exact lists (order matters)
     assert rs["ants"] == expected_ants
     assert rs["towers"] == expected_towers
-    # Pheromone has only two non-zero cells matching army on owned tiles
+    # pheromone grid still derived from armies on owned tiles (unchanged)
     ph0 = rs["pheromone"][0]
     ph1 = rs["pheromone"][1]
     assert ph0[1][1] == 3 and ph0[3][3] == 0
     assert ph1[3][3] == 5 and ph1[1][1] == 0
-    # Sanity: sums match visible ants' hp per player
-    assert sum(sum(row) for row in ph0) == 3
-    assert sum(sum(row) for row in ph1) == 5

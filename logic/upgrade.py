@@ -50,18 +50,20 @@ def production_up(location: list[int, int], gamestate, player: int) -> bool:
         type(gamestate.board[location[0]][location[1]].generals).__name__
         == "MainGenerals"
     ):
-        if gamestate.board[location[0]][location[1]].generals.produce_level == 1:
-            if gamestate.coin[player] < constant.lieutenant_production_T1 // 2:
+        # treat main general produce_level as base speed level
+        lvl = gamestate.board[location[0]][location[1]].generals.produce_level
+        if lvl == 1:
+            if gamestate.coin[player] < constant.base_upgrade_speed_T1:
                 return False
             else:
                 gamestate.board[location[0]][location[1]].generals.produce_level = 2
-                gamestate.coin[player] -= constant.lieutenant_production_T1 // 2
-        elif gamestate.board[location[0]][location[1]].generals.produce_level == 2:
-            if gamestate.coin[player] < constant.lieutenant_production_T2 // 2:
+                gamestate.coin[player] -= constant.base_upgrade_speed_T1
+        elif lvl == 2:
+            if gamestate.coin[player] < constant.base_upgrade_speed_T2:
                 return False
             else:
-                gamestate.board[location[0]][location[1]].generals.produce_level = 4
-                gamestate.coin[player] -= constant.lieutenant_production_T2 // 2
+                gamestate.board[location[0]][location[1]].generals.produce_level = 3
+                gamestate.coin[player] -= constant.base_upgrade_speed_T2
         else:
             return False
     if (

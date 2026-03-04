@@ -121,7 +121,8 @@ def test_turn_switch_web_ai_has_no_noop_action_packet():
             web_states = [_get_web_round_state(m) for m in round_msgs]
             web_states = [s for s in web_states if s is not None]
             assert web_states, "expected a web round_state payload"
-            assert any(int(s.get("player", -1)) == 1 for s in web_states)
+            # new protocol uses `turn` to indicate which player is next
+            assert any(int(s.get("turn", -1)) == 1 for s in web_states)
         finally:
             _stop_logic(proc)
 
@@ -146,6 +147,6 @@ def test_turn_switch_back_to_web_after_ai_end_turn():
             web_states = [_get_web_round_state(m) for m in round_msgs]
             web_states = [s for s in web_states if s is not None]
             assert web_states, "expected web round_state after ai turn"
-            assert any(int(s.get("player", -1)) == 0 for s in web_states)
+            assert any(int(s.get("turn", -1)) == 0 for s in web_states)
         finally:
             _stop_logic(proc)

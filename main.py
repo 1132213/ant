@@ -338,6 +338,10 @@ def main() -> int:
                 rs.setdefault("winner", getattr(gamestate, "winner", -1))
                 rs.setdefault("message", "[,]")
                 rs.setdefault("end_msg", "")
+                # ``turn`` is the preferred name for the field indicating which
+                # player should act next; ``player`` was previously used and is
+                # kept here for backwards compatibility with existing clients.
+                rs["turn"] = turn
                 rs["player"] = turn
                 return json_line(rs)
 

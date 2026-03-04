@@ -2,7 +2,7 @@ import math
 import pytest
 
 from logic.movement import calculate_new_pos, army_move, check_general_movement, general_move
-from logic.gamedata import Direction, CellType
+from logic.gamedata import Direction, CellType, MainGenerals
 
 
 def test_calculate_new_pos_and_bounds():
@@ -136,4 +136,127 @@ def test_check_and_general_move(plain_state):
     s.board[5][6].player = 0
     s.board[5][7].player = 0
     assert check_general_movement([5, 5], s, 0, [5, 7]) is False
+
+
+def test_movement_bounds_and_ant_logging(plain_state):
+    s = plain_state
+    # moving army off board should fail and not record a move
+    s.board[0][0].player = 0
+    s.board[0][0].army = 5
+    assert army_move([0, 0], s, 0, Direction.UP, 1) is False
+    assert getattr(s, "_ant_moves", {}) == {}
+
+    # legal move should be recorded
+    s.board[0][1].player = 0
+    s.board[0][1].army = 1
+    s.rest_move_step[0] = 1
+    ok = army_move([0, 0], s, 0, Direction.RIGHT, 2)
+    assert ok is True
+    # after an army move there is no ant creation yet
+    ants = s._build_ants()
+    assert ants == []
+
+
+def test_ant_kill_count_increment():
+    """When an ant steps on an enemy general it counts as a kill."""
+    from logic.gamestate import GameState
+    from logic.map import PLAYER_0_BASE_CAMP
+    from logic.ant import Ant
+    from logic.gamedata import MainGenerals
+
+    s = GameState()
+    # give player0 a general at base camp
+    s.board[PLAYER_0_BASE_CAMP[0]][PLAYER_0_BASE_CAMP[1]].generals = MainGenerals(player=0, id=0, position=PLAYER_0_BASE_CAMP)
+    s.board[PLAYER_0_BASE_CAMP[0]][PLAYER_0_BASE_CAMP[1]].player = 0
+    # spawn an ant belonging to player1 directly on that tile
+    ant = Ant(player=1, id=0, x=PLAYER_0_BASE_CAMP[0], y=PLAYER_0_BASE_CAMP[1], level=0)
+    s.ants.append(ant)
+    # perform attack and manage phases
+    s._ant_attack()
+    s._ant_manage()
+    assert s.kill_count[0] == 1
+
+
+def test_ant_generation_and_movement():
+    # when update_round is called main generals should spawn ants and the
+    # ants should move toward the opponent base on the subsequent round
+    from logic.gamestate import GameState
+
+    s = GameState()
+    # create two main generals manually
+    s.board[0][0].generals = MainGenerals(player=0, id=0, position=[0, 0])
+    s.board[0][0].player = 0
+    s.board[0][0].army = 10
+    s.board[1][1].generals = MainGenerals(player=1, id=1, position=[1, 1])
+    s.board[1][1].player = 1
+    s.board[1][1].army = 10
+
+    # first round spawns ants at the predefined base camp coords
+    s.update_round(s)
+    assert len(s.ants) >= 1
+    # base camp constant defined in map module
+    from logic.map import PLAYER_0_BASE_CAMP
+    pos0 = [ant.pos for ant in s.ants if ant.player == 0][0]
+    assert pos0 == PLAYER_0_BASE_CAMP
+
+    # second round the ant should move away from the base camp
+    s.update_round(s)
+    pos0_new = [ant.pos for ant in s.ants if ant.player == 0][0]
+    assert pos0_new != PLAYER_0_BASE_CAMP
+
+
+def test_ant_no_trail_or_duplicates():
+    """After multiple rounds the number of ants should stay constant and
+    no ant id should show up twice in the JSON snapshot.  This guards
+    against backend leaking old positions into the state (which the Unity
+    client was exhibiting as the trail-of-ants bug)."""
+    from logic.gamestate import GameState
+    from logic.map import PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP
+
+    s = GameState()
+    # give each player a main general so that ants spawn
+    s.board[0][0].generals = MainGenerals(player=0, id=0, position=[0, 0])
+    s.board[0][0].player = 0
+    s.board[1][1].generals = MainGenerals(player=1, id=1, position=[1, 1])
+    s.board[1][1].player = 1
+
+    seen_positions = {}
+    # simulate 5 rounds and record snapshots
+    for _ in range(5):
+        s.update_round(s)
+        ants_json = s._build_round_state()["ants"]
+        ids = {a["id"] for a in ants_json}
+        # every id should be unique per snapshot
+        assert len(ids) == len(ants_json)
+        # compare against previous positions
+        for a in ants_json:
+            aid = a["id"]
+            pos = (a["pos"]["x"], a["pos"]["y"])
+            if aid in seen_positions:
+                # ensure position actually changed (or ant died)
+                assert pos != seen_positions[aid]
+            seen_positions[aid] = pos
+        # also make sure no internal path data survived the snapshot
+        for ant in s.ants:
+            assert ant.path == []
+
+
+def test_pheromone_seed_and_size(tmp_path):
+    from logic.gamestate import GameState
+    from logic.constant import row, col
+    s = GameState()
+    # before replay_open pheromone may be None
+    assert s._pheromone is None
+    s.replay_file = str(tmp_path / "dummy.json")
+    s.replay_open(12345)
+    # _pheromone should now be a 2×row×col structure
+    assert s._pheromone is not None
+    assert len(s._pheromone) == 2
+    assert len(s._pheromone[0]) == row
+    assert len(s._pheromone[0][0]) == col
+    # values should be >0 because of +8 constant
+    assert all(v > 0 for plane in s._pheromone for line in plane for v in line)
+    # building pheromone returns a padded grid at least 19×19
+    ph = s._build_pheromone()
+    assert len(ph[0]) >= 19 and len(ph[0][0]) >= 19
 

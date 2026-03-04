@@ -76,13 +76,23 @@ def army_move(
             return False
 
     newX, newY = calculate_new_pos(location, direction)
-    if newX < 0:  # 越界
+    # calculate_new_pos already returns (-1,-1) if the destination is invalid
+    if newX < 0 or newY < 0 or newX >= row or newY >= col:  # 越界
         return False
     if (
         gamestate.board[newX][newY].type == CellType.MOUNTAIN
         and gamestate.tech_level[player][1] == 0
     ):  # 不能爬山
         return False
+    # record ant movement for replay/UI
+    try:
+        moves = getattr(gamestate, "_ant_moves", None)
+        if moves is None:
+            gamestate._ant_moves = {}
+            moves = gamestate._ant_moves
+        moves[(newX, newY)] = int(direction)
+    except Exception:
+        pass
 
     if gamestate.board[newX][newY].player == player:  # 目的地格子己方所有
         gamestate.board[newX][newY].army += num
@@ -129,6 +139,9 @@ def general_move(
 ) -> bool:  # 将军移动（参数须保证合法）
     x, y = location[0], location[1]
     newX, newY = destination[0], destination[1]
+    # make sure destination is within bounds
+    if newX < 0 or newY < 0 or newX >= row or newY >= col:
+        return False
     gen = gamestate.board[x][y].generals
     gamestate.board[newX][newY].generals = gen
     gamestate.board[newX][newY].generals.position = [newX, newY]
@@ -150,11 +163,14 @@ def check_general_movement(
     destination: list[int, int],
 ) -> bool:  # 检查将军移动合法性
     x, y = location[0], location[1]
-    if outrange(location):  # 越界
+    newX, newY = destination[0], destination[1]
+    if outrange(location):  # 越界起点
+        return False
+    if newX < 0 or newY < 0 or newX >= row or newY >= col:
         return False
     if player != 0 and player != 1:  # 玩家非法
         return False
-    if gamestate.board[destination[0]][destination[1]].generals != None:
+    if gamestate.board[newX][newY].generals != None:
         return False
     if (
         gamestate.board[x][y].player != player or gamestate.board[x][y].generals == None

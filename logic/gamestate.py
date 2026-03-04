@@ -19,6 +19,8 @@ from logic.gamedata import (
     WeaponType,
     init_coin,
 )
+from logic.ant import Ant
+from logic.map import Map, PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP
 from logic.general_skills import skill_activate
 from logic.generate_round_replay import get_single_round_replay
 from logic.movement import army_move, general_move
@@ -73,6 +75,16 @@ class GameState:
     next_generals_id: int = 0
     winner: int = -1
 
+    # ant-specific state (port of ant_game logic)
+    base_hp: list[int] = field(default_factory=lambda: [50, 50])
+    # track number of enemy ants killed by each player (for tiebreaker)
+    kill_count: list[int] = field(default_factory=lambda: [0, 0])
+    # record how many times each player has used a super weapon
+    superweapon_used: list[int] = field(default_factory=lambda: [0, 0])
+    ants: list[Ant] = field(default_factory=list)
+    _ant_id: int = field(default=0, init=False, repr=False)
+    map: Map = field(default_factory=Map)
+
     # ---- replay support ----
     replay_seed: int = 0
     _ant_replay: Optional[AntReplayWriter] = field(default=None, init=False, repr=False)
@@ -83,9 +95,38 @@ class GameState:
     # tower delta tracking (so towers list can be "delta-like")
     _prev_towers_snapshot: Dict[int, tuple] = field(default_factory=dict, init=False, repr=False)
 
+    # ----- ant/pheromone helpers (not part of official rules) -----
+    # map from destination coordinate to last move direction (int)
+    _ant_moves: Dict[tuple[int, int], int] = field(default_factory=dict, init=False, repr=False)
+    # 2×row×col pheromone grid used by frontends for pathfinding
+    _pheromone: Optional[list] = field(default=None, init=False, repr=False)
+    _lcg_seed: int = field(default=0, init=False, repr=False)
+    # track last round when per-10-turn army bonus or full-round coin was granted
+    _last_bonus_round: int = field(default=0, init=False, repr=False)
+
+    def _lcg(self) -> int:
+        # linear congruential generator matching game.md snippet
+        self._lcg_seed = (25214903917 * self._lcg_seed) & ((1 << 48) - 1)
+        return self._lcg_seed
+
+    def _init_pheromon(self, seed: int) -> None:
+        self._lcg_seed = int(seed)
+        self._pheromone = [[[0.0 for _ in range(col)] for _ in range(row)] for _ in range(2)]
+        if self._pheromone is None:
+            return
+        for i in range(2):
+            for j in range(row):
+                for k in range(col):
+                    self._pheromone[i][j][k] = self._lcg() * (2 ** -46) + 8
+
     def replay_open(self, seed: int) -> None:
         self.replay_seed = int(seed)
         self._ant_replay = AntReplayWriter(self.replay_file, self.replay_seed)
+        # initialize pheromone map so frontend can show a tourable background
+        try:
+            self._init_pheromon(seed)
+        except Exception:
+            pass
 
     def replay_close(self) -> None:
         if self._ant_replay is not None:
@@ -142,62 +183,89 @@ class GameState:
     def _build_pheromone(self) -> list:
         """
         pheromone: [2][H][W]
-        用“占领格 army 强度”派生：己方占领则为 army，否则 0。
+        Frontend uses this map for pathfinding/rendering. we maintain a seeded
+        random baseline (initialized in replay_open) and optionally bump values
+        by army strength so that occupied cells attract ants.
         """
-        # Frontend uses indices up to 18, so keep at least 19x19.
-        target_h = max(row, 19)
-        target_w = max(col, 19)
-        pheromone = []
+        # make sure we have something to return even if init failed
+        if self._pheromone is None:
+            # fallback to the old army-based occupancy
+            target_h = max(row, 19)
+            target_w = max(col, 19)
+            pheromone = []
+            for p in (0, 1):
+                grid = []
+                for i in range(target_h):
+                    line = []
+                    for j in range(target_w):
+                        if i < row and j < col:
+                            c = self.board[i][j]
+                            line.append(int(c.army) if c.player == p else 0)
+                        else:
+                            line.append(0)
+                    grid.append(line)
+                pheromone.append(grid)
+            return pheromone
+
+        # copy the seeded baseline and optionally add a small army bias
+        result = []
         for p in (0, 1):
             grid = []
-            for i in range(target_h):
+            for i in range(row):
                 line = []
-                for j in range(target_w):
-                    if i < row and j < col:
-                        c = self.board[i][j]
-                        line.append(int(c.army) if c.player == p else 0)
-                    else:
-                        line.append(0)
+                for j in range(col):
+                    base = float(self._pheromone[p][i][j])
+                    # bias towards stronger armies of that player
+                    if self.board[i][j].player == p:
+                        base += float(self.board[i][j].army) * 0.1
+                    line.append(base)
                 grid.append(line)
-            pheromone.append(grid)
-        return pheromone
+            # pad to at least 19×19 for frontend convenience
+            for _ in range(len(grid), max(row, 19)):
+                grid.append([0.0] * max(col, 19))
+            for line in grid:
+                if len(line) < max(col, 19):
+                    line.extend([0.0] * (max(col, 19) - len(line)))
+            result.append(grid)
+        return result
 
     def _build_ants(self) -> list:
         """
-        ants: list of dict (full list)
-        用“所有被占领且 army>0 的格子”派生 ants。
+        Convert the internal :class:`Ant` objects into the JSON-friendly
+        structure the frontend expects.  The ``move`` field records the last
+        step taken (or -1 if none).
         """
-        ants = []
-        aid = 0
-        for i in range(row):
-            for j in range(col):
-                c = self.board[i][j]
-                if c.player != -1 and c.army > 0:
-                    ants.append({
-                        "age": 0,
-                        "hp": int(c.army),
-                        "id": aid,
-                        "level": 0,
-                        "move": -1,
-                        "player": int(c.player),
-                        "pos": {"x": int(i), "y": int(j)},
-                        "status": 0,
-                    })
-                    aid += 1
-        return ants
+        ants_json = []
+        for ant in self.ants:
+            status = ant.get_status((PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP))
+            mv = ant.path[-1] if ant.path else -1
+            ants_json.append({
+                "age": int(ant.age),
+                "hp": int(ant.hp),
+                "id": int(ant.id),
+                "level": int(ant.level),
+                "move": int(mv),
+                "player": int(ant.player),
+                "pos": {"x": int(ant.pos[0]), "y": int(ant.pos[1])},
+                "status": status,
+            })
+            # path is only needed internally; clear after snapshot so that
+            # replay/UI clients cannot inadvertently render the full trail.
+            ant.path.clear()
+        # housekeeping: clear movement log to avoid buildup
+        if hasattr(self, "_ant_moves"):
+            self._ant_moves.clear()
+        return ants_json
 
     def _base_hp_from_main_general(self) -> list[int]:
         """
-        camps: 用各自 MainGenerals 所在格的 army 作为“基地血量”
+        ANT GAME CHANGE
+
+        return the explicit base_hp values instead of using the generals'
+        army; the old implementation caused the health to grow when
+        production happened on the general tile.
         """
-        camps = [50, 50]
-        for p in (0, 1):
-            for g in self.generals:
-                if isinstance(g, MainGenerals) and g.player == p:
-                    x, y = g.position
-                    camps[p] = int(self.board[x][y].army)
-                    break
-        return camps
+        return [int(self.base_hp[0]), int(self.base_hp[1])]
 
     def _build_towers_full(self) -> list:
         towers = []
@@ -205,6 +273,10 @@ class GameState:
             if g.player == -1:
                 continue
             x, y = g.position
+            # ignore any generator whose stored position is outside the board
+            if x < 0 or y < 0 or x >= row or y >= col:
+                # concurrent bug: general moved out of range, skip it
+                continue
             ttype = 0 if isinstance(g, MainGenerals) else (1 if isinstance(g, SubGenerals) else 2)
 
             cd = 0
@@ -313,6 +385,102 @@ class GameState:
         # clear ops after write
         self._last_ops = [[], []]
 
+    # ------------------- ant_game helpers -------------------
+    def _ant_attack(self) -> None:
+        """Simplified ant attack phase.
+
+        The C++ implementation fires towers at ants; in the Python port we
+        simply remove any ant that lands on a cell with an opposing general
+        (simulating a hit) to keep things sensible for the frontend.
+        """
+        to_kill = []
+        for ant in self.ants:
+            # if ant steps onto a tile occupied by an enemy general, kill it
+            x, y = ant.pos
+            if 0 <= x < row and 0 <= y < col:
+                cell = self.board[x][y]
+                if cell.generals is not None and cell.generals.player != ant.player:
+                    to_kill.append(ant)
+        for ant in to_kill:
+            ant.set_hp(True and -ant.hp)  # force fail
+    
+    def _ant_move(self) -> None:
+        """Move each alive ant one step towards opponent base."""
+        if not self.ants:
+            return
+        for ant in list(self.ants):
+            status = ant.get_status((PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP))
+            if status == Ant.Status.Alive:
+                target = PLAYER_1_BASE_CAMP if ant.player == 0 else PLAYER_0_BASE_CAMP
+                mov = self.map.get_move(ant, target)
+                ant.move(mov)
+    
+    def _ant_update_pheromone(self) -> None:
+        """Decay pheromone and then update based on finished ants."""
+        # global reduction of pheromone first, matching C++ next_round
+        self.map.next_round()
+        for ant in self.ants:
+            st = ant.get_status((PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP))
+            if st in (Ant.Status.Success, Ant.Status.Fail, Ant.Status.TooOld):
+                self.map.update_pheromone(ant)
+    
+    def _ant_manage(self) -> None:
+        """Handle ant success/fail/age removal and adjust base HP and coins."""
+        new_list = []
+        for ant in self.ants:
+            st = ant.get_status((PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP))
+            if st == Ant.Status.Success:
+                # decrement opponent base hp and reward attacker
+                if ant.player == 0:
+                    self.base_hp[1] -= 1
+                else:
+                    self.base_hp[0] -= 1
+                self.coin[ant.player] += 5  # success bounty
+            elif st == Ant.Status.Fail:
+                # reward coin to opposing player based on level
+                opp = 1 - ant.player
+                lvl = ant.level
+                reward = 3 if lvl == 0 else (5 if lvl == 1 else 7)
+                self.coin[opp] += reward
+                # count kill for tiebreaker
+                self.kill_count[opp] += 1
+            elif st == Ant.Status.TooOld:
+                # age‑death gives no coins
+                pass
+            else:
+                new_list.append(ant)
+        self.ants = new_list
+
+    def _ant_generate(self) -> None:
+        """Generate new ants according to base upgrade rule.
+
+        Each player produces one ant when the round number is divisible by
+        K, where K = 4/2/1 for production levels 1/2/3 respectively.
+        Production level is stored in the main general's produce_level.
+        """
+        # find produce_level for each player
+        prod_level = [1, 1]
+        for g in self.generals:
+            if isinstance(g, MainGenerals) and 0 <= g.player <= 1:
+                prod_level[g.player] = g.produce_level
+        coords = [PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP]
+        for player in (0, 1):
+            lvl = prod_level[player]
+            # map level to K
+            K = 4 if lvl == 1 else (2 if lvl == 2 else 1)
+            if K <= 0:
+                K = 4
+            if self.round % K != 0:
+                continue
+            x, y = coords[player]
+            ant = Ant(player=player, id=self._ant_id, x=x, y=y, level=0)
+            self._ant_id += 1
+            self.ants.append(ant)
+
+    def _ant_increase_age(self) -> None:
+        for ant in self.ants:
+            ant.increase_age()
+
 
 def init_generals(gamestate: GameState):
     # init random position
@@ -377,8 +545,8 @@ def update_round(gamestate: GameState):
                 if gamestate.board[i][j].generals.player != -1:
                     gamestate.coin[gamestate.board[i][j].generals.player] += gamestate.board[i][j].generals.produce_level
 
-            # 每10回合增兵
-            if gamestate.round % 10 == 0:
+            # 每10回合增兵；记录轮数避免同一回合多次调用重复加兵
+            if gamestate.round % 10 == 0 and gamestate.round != gamestate._last_bonus_round:
                 if gamestate.board[i][j].player != -1:
                     gamestate.board[i][j].army += 1
                     changed.add(i * col + j)
@@ -428,8 +596,20 @@ def update_round(gamestate: GameState):
 
     gamestate.active_super_weapon = list(filter(lambda x: (x.rest > 0), gamestate.active_super_weapon))
 
-    gamestate.coin[0] += 1
-    gamestate.coin[1] += 1
+    # ---------- ant_game lifecycle ----------
+    gamestate._ant_attack()
+    gamestate._ant_move()
+    gamestate._ant_update_pheromone()
+    gamestate._ant_manage()
+    gamestate._ant_generate()
+    gamestate._ant_increase_age()
+    # ---------- end ant lifecycle ----------
+
+    # 每个完整回合给两位玩家+1金币（可选规则），同样打表防止多次调用
+    if gamestate.round != gamestate._last_bonus_round:
+        gamestate.coin[0] += 1
+        gamestate.coin[1] += 1
+        gamestate._last_bonus_round = gamestate.round
 
     # 在回合数+1之前写入 AntWar replay frame
     gamestate.append_ant_replay_frame(force=False)

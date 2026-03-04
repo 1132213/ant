@@ -4,7 +4,8 @@ from logic.gamestate import GameState
 from logic.gamedata import CellType, MainGenerals, SubGenerals, SkillType
 from logic.general_skills import skill_activate
 from logic.upgrade import tech_update, production_up
-from logic.call_generals import call_generals
+from logic.call_generals import call_generals, downgrade_tower
+import logic.constant as constant
 
 
 def _reset_plain(state: GameState):
@@ -112,7 +113,8 @@ def test_call_generals_adds_tower_and_deducts_coin(tmp_path):
     ok = call_generals(s, 0, pos)
     assert ok is True
     assert isinstance(s.board[pos[0]][pos[1]].generals, SubGenerals)
-    assert s.coin[0] == 150  # 200 - 50
+    # first tower costs 15 coins
+    assert s.coin[0] == 185  # 200 - 15
 
     s.append_ant_replay_frame(force=True)
     s.replay_close()
@@ -125,4 +127,53 @@ def test_call_generals_adds_tower_and_deducts_coin(tmp_path):
     assert t["player"] == 0 and t["type"] == 1
     assert t["pos"] == {"x": pos[0], "y": pos[1]}
     assert t["cd"] == 0
+
+    # Try placing a second tower; cost should double (30 coins from remaining 185 -> 155)
+    pos2 = [3, 3]
+    s.board[pos2[0]][pos2[1]].player = 0
+    ok = call_generals(s, 0, pos2)
+    assert ok is True
+    assert s.coin[0] == 155  # 185 - 30
+
+
+def test_tower_downgrade_and_removal_refund(tmp_path):
+    s = GameState()
+    s.replay_file = str(tmp_path / "ant.json")
+    _reset_plain(s)
+    # place main generals to enable coin
+    _place_main(s, 0, 0, 0)
+    _place_main(s, 1, 6, 6)
+    s.coin = [1000, 1000]
+
+    # build two towers for player0
+    pos1 = [2, 3]
+    pos2 = [3, 3]
+    s.board[pos1[0]][pos1[1]].player = 0
+    s.board[pos2[0]][pos2[1]].player = 0
+    assert call_generals(s, 0, pos1) is True
+    assert call_generals(s, 0, pos2) is True
+    assert s.coin[0] == 1000 - 15 - 30
+    tid = s.generals[-2].id
+
+    # remove first tower (count after removal 1)
+    assert downgrade_tower(s, 0, tid) is True
+    assert s.coin[0] == 1000 - 15 - 30 + int(0.8 * 15 * 2)
+
+    # upgrade remaining tower to level3 and downgrade stepwise
+    tid2 = s.generals[-1].id
+    assert production_up(s.generals[-1].position, s, 0) is True
+    assert production_up(s.generals[-1].position, s, 0) is True
+    assert s.generals[-1].produce_level == 4
+    oldc = s.coin[0]
+    assert downgrade_tower(s, 0, tid2) is True
+    assert s.generals[-1].produce_level == 2
+    assert s.coin[0] == oldc + int(constant.lieutenant_production_T2 * 0.8)
+    oldc = s.coin[0]
+    assert downgrade_tower(s, 0, tid2) is True
+    assert s.generals[-1].produce_level == 1
+    assert s.coin[0] == oldc + int(constant.lieutenant_production_T1 * 0.8)
+    oldc = s.coin[0]
+    assert downgrade_tower(s, 0, tid2) is True
+    assert all(g.id != tid2 for g in s.generals)
+    assert s.coin[0] == oldc + int(0.8 * 15 * 1)
 

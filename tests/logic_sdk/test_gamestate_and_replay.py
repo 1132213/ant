@@ -85,3 +85,15 @@ def test_trans_state_to_init_json_and_replay_cell_type(plain_state):
     # First two chars correspond to (0,0) and (0,1)
     assert data["Cell_type"][0] == str(int(CellType.BOG))
     assert data["Cell_type"][1] == str(int(CellType.MOUNTAIN))
+
+
+def test_towers_ignore_out_of_bounds_generals(plain_state):
+    s = plain_state
+    # manually append a general with illegal coordinates
+    from logic.gamedata import MainGenerals
+    bad = MainGenerals(player=0, id=999)
+    bad.position = [row + 5, col + 3]  # out of range
+    s.generals.append(bad)
+    towers = s._build_towers_full()
+    # the bad general should not appear in the list
+    assert all(t["id"] != 999 for t in towers)

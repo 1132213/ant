@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover
 import numpy as np
 
 from logic.constant import row, col
+from logic.map import PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP
 from logic.gamedata import Direction
 from logic.gamestate import GameState
 
@@ -153,6 +154,25 @@ def _main_gen(state: GameState, player: int):
 
 
 def policy(round_idx: int, my_seat: int, state: GameState) -> List[List[int]]:
+    # intercept nearby ants before consulting the neural policy
+    base = PLAYER_0_BASE_CAMP if my_seat == 0 else PLAYER_1_BASE_CAMP
+    for ant in getattr(state, "ants", []):
+        if ant.player != my_seat:
+            dist = state.map.distance(ant.pos, base)
+            if dist <= 2:
+                g = _main_gen(state, my_seat)
+                if g and state.board[g.position[0]][g.position[1]].army > 1 and state.rest_move_step[my_seat] > 0:
+                    x, y = g.position
+                    if ant.pos[0] < x:
+                        d = Direction.UP
+                    elif ant.pos[0] > x:
+                        d = Direction.DOWN
+                    elif ant.pos[1] < y:
+                        d = Direction.LEFT
+                    else:
+                        d = Direction.RIGHT
+                    num = min(3, state.board[x][y].army - 1)
+                    return [[1, x, y, int(d) + 1, num], [8]]
     # Fallback if torch or model unavailable
     if torch is None or not os.path.exists(MODEL_PATH):
         return [[8]]

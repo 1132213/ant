@@ -2,6 +2,7 @@ import random
 from typing import List
 
 from logic.gamedata import Direction
+from logic.map import PLAYER_0_BASE_CAMP, PLAYER_1_BASE_CAMP
 from logic.gamestate import GameState
 
 
@@ -17,7 +18,32 @@ def _find_main(state: GameState, player: int):
 
 
 def policy(round_idx: int, my_seat: int, state: GameState) -> list[list[int]]:
-    """Safe random baseline: only moves if legal and has >1 army, else end."""
+    """Safe random baseline with ant interception.
+
+    If an enemy ant is within distance 2 of our base, send 1–3 army from
+the main general toward it; otherwise behave as before.
+    """
+    # intercept nearby ants first
+    base = PLAYER_0_BASE_CAMP if my_seat == 0 else PLAYER_1_BASE_CAMP
+    for ant in getattr(state, "ants", []):
+        if ant.player != my_seat:
+            dist = state.map.distance(ant.pos, base)
+            if dist <= 2:
+                g = _find_main(state, my_seat)
+                if g:
+                    x, y = g.position
+                    if state.board[x][y].army > 1 and state.rest_move_step[my_seat] > 0:
+                        if ant.pos[0] < x:
+                            d = Direction.UP
+                        elif ant.pos[0] > x:
+                            d = Direction.DOWN
+                        elif ant.pos[1] < y:
+                            d = Direction.LEFT
+                        else:
+                            d = Direction.RIGHT
+                        num = min(3, state.board[x][y].army - 1)
+                        return [move_army_op([x, y], d, num), [8]]
+    # fallback to original random safe behavior
     g = _find_main(state, my_seat)
     if not g:
         return [[8]]

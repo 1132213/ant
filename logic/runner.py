@@ -23,7 +23,7 @@ def run_match(
     ai0: AI,
     ai1: AI,
     seed: Optional[int] = None,
-    max_rounds: int = 200,
+    max_rounds: int = 512,
     replay_file: str | None = None,
     p0_name: str = "p0",
     p1_name: str = "p1",

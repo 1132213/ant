@@ -60,7 +60,7 @@ except Exception:
 class EnvConfig:
     max_generals: int = 64
     max_army_move: int = 100
-    max_rounds: int = 500
+    max_rounds: int = 512
     initial_coin: int = 40
     max_army_obs: int = 10000
 
