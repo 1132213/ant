@@ -3,12 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import os
-import random
 from typing import Callable
 
 import numpy as np
 
-from logic.game_rules import is_game_over, tiebreak_now
+from logic.game_rules import is_game_over
 from logic.gamestate import GameState, init_generals, update_round
 
 from SDK.mcts_features import (
@@ -19,6 +18,7 @@ from SDK.mcts_features import (
     heuristic_value,
     simulate_turn,
 )
+from SDK.training_base import SelfPlayTrainerBase, TrainLoopConfig, ValueModelBase, seed_python
 
 
 AI = Callable[[int, int, GameState], list[list[int]]]
@@ -33,18 +33,7 @@ class SearchConfig:
     heuristic_weight: float = 0.7
 
 
-@dataclass(slots=True)
-class TrainConfig:
-    games: int = 40
-    max_rounds: int = 80
-    seed: int | None = None
-    train_every: int = 4
-    buffer_size: int = 4096
-    fit_epochs: int = 8
-    batch_size: int = 128
-    lr: float = 0.05
-    l2: float = 1e-4
-    opponents: tuple[str, ...] = ("self", "handcraft")
+TrainConfig = TrainLoopConfig
 
 
 @dataclass(slots=True)
@@ -65,7 +54,7 @@ class SearchNode:
         return self.value_sum / self.visits
 
 
-class LinearValueModel:
+class LinearValueModel(ValueModelBase):
     def __init__(self, feature_dim: int, weights: np.ndarray | None = None, bias: float = 0.0, updates: int = 0):
         self.feature_dim = int(feature_dim)
         self.weights = np.zeros(self.feature_dim, dtype=np.float32) if weights is None else weights.astype(np.float32)
@@ -262,49 +251,40 @@ def load_ai_callable(spec: str) -> AI:
 
 
 def _init_training_state(seed: int | None = None) -> GameState:
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed % (2 ** 32))
+    seed_python(seed)
     state = GameState()
     state.disable_replay = True
     init_generals(state)
     return state
 
 
-def _play_episode(
-    agent: MCTSAgent,
-    max_rounds: int,
-    controllers: dict[int, tuple[bool, AI]],
-    seed: int | None,
-) -> tuple[int, GameState, list[tuple[np.ndarray, float]]]:
-    state = _init_training_state(seed)
-    samples: list[tuple[np.ndarray, float]] = []
-    round_idx = 1
-    winner = -1
-    while round_idx <= max_rounds and winner == -1:
-        for player in (0, 1):
-            trainable, ctrl = controllers[player]
-            if trainable:
-                features = extract_features(state, player)
-                ops = ctrl(round_idx, player, state)
-                samples.append((features, float(player)))
-            else:
-                ops = ctrl(round_idx, player, state)
-            apply_ops_in_place(state, player, ops)
-            winner = is_game_over(state)
-            if winner != -1:
-                break
-        if winner != -1:
-            break
+class MCTSSelfPlayTrainer(SelfPlayTrainerBase):
+    def __init__(self, agent: MCTSAgent, config: TrainConfig):
+        super().__init__(agent.model, config)
+        self.agent = agent
+        self.fixed_pool: dict[str, AI] = {
+            "handcraft": load_ai_callable("handcraft"),
+            "greedy": load_ai_callable("greedy"),
+            "random_safe": load_ai_callable("random_safe"),
+        }
+
+    def build_trainable_policy(self) -> AI:
+        return self.agent.policy
+
+    def resolve_fixed_opponent(self, name: str) -> AI:
+        return self.fixed_pool[name] if name in self.fixed_pool else load_ai_callable(name)
+
+    def build_initial_state(self, seed: int | None) -> GameState:
+        return _init_training_state(seed)
+
+    def feature_vector(self, state: GameState, player: int) -> np.ndarray:
+        return extract_features(state, player)
+
+    def apply_turn(self, state: GameState, player: int, ops: list[list[int]]) -> None:
+        apply_ops_in_place(state, player, ops)
+
+    def finish_round(self, state: GameState) -> None:
         update_round(state)
-        round_idx += 1
-    if winner == -1:
-        winner = tiebreak_now(state)
-    labeled = [
-        (features, 1.0 if int(player) == winner else -1.0)
-        for features, player in samples
-    ]
-    return winner, state, labeled
 
 
 def train_mcts_selfplay(
@@ -324,83 +304,6 @@ def train_mcts_selfplay(
         sample = extract_features(GameState(), 0)
         model = LinearValueModel(feature_dim=int(sample.shape[0]))
     agent = MCTSAgent(model=model, search_config=search)
-
-    fixed_pool: dict[str, AI] = {
-        "handcraft": load_ai_callable("handcraft"),
-        "greedy": load_ai_callable("greedy"),
-        "random_safe": load_ai_callable("random_safe"),
-    }
-    opponents = list(cfg.opponents) if cfg.opponents else ["self"]
-    replay_buffer: list[tuple[np.ndarray, float]] = []
-    summary = {
-        "games": 0.0,
-        "wins": 0.0,
-        "losses": 0.0,
-        "draws": 0.0,
-        "avg_rounds": 0.0,
-        "last_loss": 0.0,
-        "model_updates": float(model.updates),
-    }
-
-    for game_idx in range(cfg.games):
-        opponent_name = opponents[game_idx % len(opponents)]
-        if opponent_name == "self":
-            controllers = {
-                0: (True, agent.policy),
-                1: (True, agent.policy),
-            }
-            tracked_player = None
-        else:
-            fixed_ai = fixed_pool[opponent_name] if opponent_name in fixed_pool else load_ai_callable(opponent_name)
-            if game_idx % 2 == 0:
-                controllers = {
-                    0: (True, agent.policy),
-                    1: (False, fixed_ai),
-                }
-                tracked_player = 0
-            else:
-                controllers = {
-                    0: (False, fixed_ai),
-                    1: (True, agent.policy),
-                }
-                tracked_player = 1
-        winner, state, labeled = _play_episode(
-            agent,
-            cfg.max_rounds,
-            controllers,
-            None if cfg.seed is None else cfg.seed + game_idx,
-        )
-        replay_buffer.extend(labeled)
-        if len(replay_buffer) > cfg.buffer_size:
-            replay_buffer = replay_buffer[-cfg.buffer_size:]
-        summary["games"] += 1.0
-        summary["avg_rounds"] += float(state.round)
-        if tracked_player is None:
-            summary["draws"] += 1.0
-        else:
-            if winner == tracked_player:
-                summary["wins"] += 1.0
-            elif winner == 1 - tracked_player:
-                summary["losses"] += 1.0
-            else:
-                summary["draws"] += 1.0
-
-        if (game_idx + 1) % max(1, cfg.train_every) == 0 or game_idx + 1 == cfg.games:
-            x = np.stack([feat for feat, _ in replay_buffer], axis=0) if replay_buffer else np.empty((0, model.feature_dim))
-            y = np.array([target for _, target in replay_buffer], dtype=np.float32) if replay_buffer else np.empty((0,), dtype=np.float32)
-            fit_info = model.fit(
-                x,
-                y,
-                epochs=cfg.fit_epochs,
-                batch_size=cfg.batch_size,
-                lr=cfg.lr,
-                l2=cfg.l2,
-                rng=rng,
-            )
-            summary["last_loss"] = float(fit_info["loss"])
-            summary["model_updates"] = float(model.updates)
-
-    if summary["games"] > 0:
-        summary["avg_rounds"] /= summary["games"]
-    model.save(save_path)
-    return summary
+    trainer = MCTSSelfPlayTrainer(agent, cfg)
+    trainer.rng = rng
+    return trainer.train(save_path)

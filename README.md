@@ -111,6 +111,7 @@ print(e.render())
 ### 2.3 训练与评测工具
 - 策略工具（SDK/policies.py）：简单的共享小网络（reduced action set），含 `obs_to_tensor`、`logits_to_action` 等。
 - 自对弈训练（SDK/train_selfplay.py）：REINFORCE 风格，自博弈，默认保存至 `AI/selfplay/model.pt`。
+- MCTS 训练（SDK/train_mcts_selfplay.py, SDK/train_mcts.sh）：基于 `AI/ai_handcraft.py` 的特征工程和回合级候选计划，训练一个轻量 value 模型，默认保存至 `AI/selfplay/mcts_value.npz`，支持 `self,handcraft,greedy,random_safe` 对手池。
 - 评测（SDK/eval_policy.py）：载入权重并统计胜/负/平。
 - 批量评测（SDK/batch_eval.py）：命令行工具，支持先后手、对局数量、对手配置、扩展指标统计（见第 4 节）。
 
@@ -139,11 +140,33 @@ def policy(round_idx: int, my_seat: int, state: GameState) -> list[list[int]]:
 ```
 python SDK/train_selfplay.py --episodes 200 --save AI/selfplay/model.pt
 ```
-2) 使用训练好的 AI 对战
+2) 基于 handcraft 特征的 MCTS 训练
+```
+bash SDK/train_mcts.sh
+```
+可选控参：
+```
+SEED=13 GAMES=48 ROUNDS=100 SIMULATIONS=10 DEPTH=3 \
+OPPONENTS=self,handcraft,greedy \
+bash SDK/train_mcts.sh
+```
+或直接运行：
+```
+PYTHONPATH=. python SDK/train_mcts_selfplay.py \
+  --save AI/selfplay/mcts_value.npz \
+  --games 24 --rounds 80 --simulations 8 --depth 3 \
+  --train_every 4 --epochs 8 --batch_size 128 \
+  --lr 0.05 --l2 1e-4 --opponents self,handcraft
+```
+3) 使用训练好的 AI 对战
 ```
 python play.py ai-vs-ai --ai0 selfplay --ai1 greedy
 ```
-3) 评测
+MCTS 版本：
+```
+MCTS_MODEL=AI/selfplay/mcts_value.npz python play.py ai-vs-ai --ai0 mcts --ai1 handcraft
+```
+4) 评测
 ```
 python SDK/eval_policy.py --model AI/selfplay/model.pt --episodes 50
 ```
@@ -153,6 +176,11 @@ python SDK/eval_policy.py --model AI/selfplay/model.pt --episodes 50
 - 推理端 AI 文件 `AI/ai_selfplay.py`：
   - 默认从 `AI/selfplay/model.pt` 读取（可通过环境变量 `SELFPLAY_MODEL` 覆盖路径）。
   - 将 reduced action logits 映射为 `{EndTurn, 从主将格子向上下左右移动 1 个兵}`。
+- MCTS 推理端 AI 文件 `AI/ai_mcts.py`：
+  - 默认读取 `AI/selfplay/mcts_value.npz`（可通过环境变量 `MCTS_MODEL` 覆盖路径）。
+  - 用 handcraft 特征生成候选整回合计划，再做回合级 MCTS 搜索。
+  - 打包命令：`bash AI/zip_mcts.sh`
+  - 示例训练日志：`AI/selfplay/mcts_train_example.log`
 
 > 你也可以在 `AI/{your_name}` 目录下管理自己的权重与辅助代码，只需保证主入口文件 `AI/ai_{your_name}.py` 暴露 `policy(...)` 接口。
 
@@ -222,11 +250,3 @@ def collect_stats(state: GameState) -> dict:
 ```
 pytest -q
 ```
-
----
-
-## 6. 常见问题（FAQ）
-- 回放文件为何是一行？
-  - 每次成功操作与每轮结束都会追加一行；若 AI 在早期没有有效指令，只会看到初始化与轮末少量行。使用基线 AI 或实际策略可观察到多行回放。
-- 手动模式如何查看合法提示？
-  - 在 `play.py manual-vs-ai` 的输入中输入 `hint`；或直接查看提示输出的指令格式与当前可用资源。

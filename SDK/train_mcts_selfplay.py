@@ -26,6 +26,7 @@ def main(argv=None) -> int:
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=0.05)
     parser.add_argument("--l2", type=float, default=1e-4)
+    parser.add_argument("--log_every", type=int, default=1)
     parser.add_argument(
         "--opponents",
         type=str,
@@ -50,6 +51,7 @@ def main(argv=None) -> int:
         batch_size=args.batch_size,
         lr=args.lr,
         l2=args.l2,
+        log_every=args.log_every,
         opponents=tuple(item.strip() for item in args.opponents.split(",") if item.strip()),
     )
 
@@ -59,7 +61,7 @@ def main(argv=None) -> int:
         train_config=train_cfg,
         warm_start_path=args.warm_start,
     )
-    print(summary)
+    print(f"[done] {summary}")
     return 0
 
 
