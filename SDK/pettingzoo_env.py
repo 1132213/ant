@@ -1,9 +1,10 @@
 """
 PettingZoo AEC wrapper for the Generals-like two-player game in this repo.
 
-Action encoding (MultiDiscrete of length 8):
+Action encoding (MultiDiscrete of length 8 but type field spans 0..13):
   [0] type: 0 EndTurn, 1 ArmyMove, 2 GeneralMove, 3 LevelUp,
-              4 GeneralSkill, 5 TechUpdate, 6 SuperWeapon, 7 CallGenerals, 8 GiveUp
+              4 GeneralSkill, 5 TechUpdate, 6 SuperWeapon, 7 CallGenerals,
+              8 GiveUp, 13 DowngradeTower
   [1] a0: generic slot (x or id or type) depending on action type
   [2] a1: generic slot (y or dest_x or sub-type)
   [3] a2: generic slot (direction 0..3, dest_y, or skill index)
@@ -25,7 +26,7 @@ Notes:
   - The wrapper keeps the same agent's turn until they choose EndTurn (type==0)
     or have no rest_move_step left for army moves. End of player_1's turn triggers
     an update_round() call matching the original game loop.
-  - Rewards are sparse: +1/-1 on terminal for winner/loser, otherwise 0.
+  - Rewards are sparse: +1/-1 on terminal for winner/loser, otherwise 0. Invalid actions produce a -1 penalty (handled in step()).
 """
 
 from __future__ import annotations
@@ -209,7 +210,8 @@ class GeneralsAECEnv(AECEnv):
     # ---- API helpers ----
     def _build_spaces(self):
         # Action: MultiDiscrete([type, a0, a1, a2, a3, a4, a5, a6])
-        type_n = 9  # 0..8
+        # allow up to type 13 inclusive (downgrade command)
+        type_n = 14  # values 0..13
         max_generals = self.config.max_generals
         max_army = self.config.max_army_move
         self._action_space = spaces.MultiDiscrete(
@@ -318,6 +320,9 @@ class GeneralsAECEnv(AECEnv):
             x = clamp(a0, 0, row - 1)
             y = clamp(a1, 0, col - 1)
             return [x, y]
+        elif atype == 13:  # DowngradeTower: [tower_id]
+            tid = clamp(a0, 0, self.config.max_generals - 1)
+            return [tid]
         else:
             return []
 

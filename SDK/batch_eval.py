@@ -39,7 +39,7 @@ def main(argv=None):
     p.add_argument("--ai0", required=True, help="AI 0 (name or module:function)")
     p.add_argument("--ai1", required=True, help="AI 1 (name or module:function)")
     p.add_argument("--games", type=int, default=20, help="Number of games")
-    p.add_argument("--rounds", type=int, default=60, help="Max rounds per game")
+    p.add_argument("--rounds", type=int, default=512, help="Max rounds per game (default 512 matching game rules)")
     p.add_argument("--seed", type=int, default=None, help="Base random seed")
     p.add_argument("--swap_seats", action="store_true", help="Alternate seats across games")
     p.add_argument("--replay_dir", type=str, default="replays", help="Directory for replays")

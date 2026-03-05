@@ -17,7 +17,7 @@ AI = Callable[[int, int, GameState], list[list[int]]]
 @dataclass(slots=True)
 class TrainLoopConfig:
     games: int = 40
-    max_rounds: int = 80
+    max_rounds: int = 512
     seed: int | None = None
     train_every: int = 4
     buffer_size: int = 4096

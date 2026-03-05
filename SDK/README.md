@@ -1,7 +1,7 @@
 SDK: PettingZoo Multi-Agent Wrapper
 ==================================
 
-This SDK provides a PettingZoo-compatible AEC environment for the two-player strategy game implemented in this repository.
+This SDK provides a PettingZoo-compatible AEC environment for the two-player strategy game implemented in this repository.  It now includes support for tower downgrade/removal actions and uses the 512-turn limit.
 
 - Package entry: `SDK/pettingzoo_env.py`
 - Import: `from SDK import env, parallel_env`
@@ -58,7 +58,7 @@ Turn model:
 
 Rewards:
 
-- Sparse: +1 for winner, -1 for loser on termination; 0 otherwise. Invalid actions incur a small -0.01 penalty.
+- Sparse: +1 for winner, -1 for loser on termination; 0 otherwise. Illegal commands are penalized with -1.
 
 Notes:
 
