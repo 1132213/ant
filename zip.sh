@@ -1,0 +1,1 @@
+zip -r game.zip ./game/ -x ./game/output -x ./game/output/* -x ./game/mini_replay.txt -x ./game/src/*.o
