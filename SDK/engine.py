@@ -872,7 +872,7 @@ class GameState:
             for tower in sorted(self.towers, key=lambda item: item.tower_id)
         ]
         ants = [
-            (ant.ant_id, ant.player, ant.x, ant.y, ant.hp, ant.level, len(ant.path), int(ant.status))
+            (ant.ant_id, ant.player, ant.x, ant.y, ant.hp, ant.level, ant.age, int(ant.status))
             for ant in sorted(self.ants, key=lambda item: item.ant_id)
         ]
         return PublicRoundState(
@@ -900,20 +900,16 @@ class GameState:
         self.towers = synced_towers
         ant_map = {ant.ant_id: ant for ant in self.ants}
         synced_ants: list[Ant] = []
-        for ant_id, player, x, y, hp, level, public_path_length, status in public_state.ants:
+        for ant_id, player, x, y, hp, level, public_age, status in public_state.ants:
             ant = ant_map.get(ant_id, Ant(ant_id, player, x, y, hp, level, age=0, status=AntStatus(status)))
             ant.player = player
             ant.x = x
             ant.y = y
             ant.hp = hp
             ant.level = level
+            ant.age = public_age
             ant.status = AntStatus(status)
-            if ant.path and not all(direction == -1 or 0 <= direction < 6 for direction in ant.path):
-                ant.path = [direction for direction in ant.path if direction == -1 or 0 <= direction < 6]
-            if public_path_length < len(ant.path):
-                ant.path = ant.path[:public_path_length]
-            elif public_path_length > len(ant.path):
-                ant.path.extend([-1] * (public_path_length - len(ant.path)))
+            ant.frozen = ant.status == AntStatus.FROZEN
             synced_ants.append(ant)
         self.ants = synced_ants
         if self.towers:

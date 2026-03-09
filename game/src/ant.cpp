@@ -34,6 +34,8 @@ int Ant::get_hp() const { return hp; }
 int Ant::get_level() const { return level; }
 // Get the HP limit of the ant.
 int Ant::get_hp_limit() const { return hp_limit; }
+// Get the age of the ant.
+int Ant::get_age() const { return age; }
 
 // Get the length of path
 int Ant::get_path_len() const { return path.size(); }

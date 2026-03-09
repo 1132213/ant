@@ -94,7 +94,8 @@ def test_zip_mcts_and_zip_greedy_include_expected_support_files(tmp_path: Path) 
     assert not (mcts_root / "ai_greedy.py").exists()
     assert not (mcts_root / "AI" / "ai_greedy").exists()
     assert (greedy_root / "runtime.py").exists()
-    assert (greedy_root / "antwar" / "core.py").exists()
+    assert (greedy_root / "core.py").exists()
+    assert not (greedy_root / "antwar").exists()
     assert not (greedy_root / "AI" / "ai_greedy").exists()
 
 

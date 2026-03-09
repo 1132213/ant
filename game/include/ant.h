@@ -54,6 +54,7 @@ class Ant {
     int get_hp() const;
     int get_hp_limit() const;
     int get_level() const;
+    int get_age() const;
     int get_path_len() const;
     Behavior get_behavior() const;
     bool is_control_immune() const;

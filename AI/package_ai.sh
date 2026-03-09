@@ -91,9 +91,9 @@ case "$TARGET" in
     ARCHIVE_NAME="ai_greedy.zip"
     FILE_MAPPINGS=(
       "${REPO_ROOT}/AI/ai_greedy/ai.py:ai.py"
+      "${REPO_ROOT}/AI/ai_greedy/core.py:core.py"
       "${REPO_ROOT}/AI/ai_greedy/runtime.py:runtime.py"
     )
-    TREE_MAPPINGS=("${REPO_ROOT}/AI/ai_greedy/antwar:antwar")
     ;;
   *)
     echo "unknown target: ${TARGET}" >&2

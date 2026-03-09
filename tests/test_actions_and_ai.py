@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from AI.ai_greedy.antwar.core import Ant as GreedyAnt, AntState as GreedyAntState, GameInfo as GreedyGameInfo
+from AI.ai_greedy.core import Ant as GreedyAnt, AntState as GreedyAntState, GameInfo as GreedyGameInfo
 from AI.ai_greedy.ai import AI as GreedyAI
 from AI.ai_greedy.runtime import _to_greedy_info, _to_sdk_operation
 from AI.ai_mcts import MCTSAgent

@@ -31,7 +31,7 @@ inline void to_json(json &j, const Ant &ant) {
              // Use -1 to indicate that this is a new ant without any move
              {"move", ant.path.empty() ? -1 : ant.path.back()},
              {"level", ant.get_level()},
-             {"age", ant.get_path_len()},
+             {"age", ant.get_age()},
              {"status", ant.get_status()}};
 }
 

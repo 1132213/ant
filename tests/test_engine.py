@@ -93,14 +93,14 @@ def test_lightning_and_emp_effects_drift_each_tick() -> None:
     assert before != after
 
 
-def test_public_round_state_serializes_path_length_not_hidden_age() -> None:
+def test_public_round_state_serializes_true_age() -> None:
     state = GameState.initial(seed=5)
     state.ants.append(Ant(7, 0, 4, 9, hp=10, level=0, age=12, path=[4, 4], status=AntStatus.ALIVE))
     public_state = state.to_public_round_state()
-    assert public_state.ants[0][6] == 2
+    assert public_state.ants[0][6] == 12
 
 
-def test_sync_public_round_state_preserves_hidden_age_and_behavior() -> None:
+def test_sync_public_round_state_updates_visible_age_and_preserves_hidden_behavior() -> None:
     state = GameState.initial(seed=3)
     ant = Ant(8, 0, 4, 9, hp=10, level=0, age=9, path=[4, 4, 1], behavior=AntBehavior.RANDOM)
     state.ants.append(ant)
@@ -113,10 +113,27 @@ def test_sync_public_round_state_preserves_hidden_age_and_behavior() -> None:
     )
     state.sync_public_round_state(public_state)
     synced = state.ants[0]
-    assert synced.age == 9
+    assert synced.age == 5
     assert synced.behavior == AntBehavior.RANDOM
-    assert len(synced.path) == 5
-    assert synced.path[-2:] == [-1, -1]
+    assert synced.path == [4, 4, 1]
+
+
+def test_sync_public_round_state_maps_frozen_status_to_hidden_flag() -> None:
+    state = GameState.initial(seed=6)
+    ant = Ant(9, 0, 4, 9, hp=10, level=0, age=2, frozen=False, pending_behavior=AntBehavior.RANDOM)
+    state.ants.append(ant)
+    public_state = PublicRoundState(
+        round_index=0,
+        towers=[],
+        ants=[(9, 0, 4, 9, 10, 0, 3, int(AntStatus.FROZEN))],
+        coins=(50, 50),
+        camps_hp=(50, 50),
+    )
+    state.sync_public_round_state(public_state)
+    synced = state.ants[0]
+    assert synced.status == AntStatus.FROZEN
+    assert synced.frozen is True
+    assert synced.pending_behavior == AntBehavior.RANDOM
 
 
 def test_update_pheromone_walks_backwards_from_current_position() -> None:

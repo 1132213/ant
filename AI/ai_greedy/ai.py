@@ -5,7 +5,7 @@ import time
 from typing import List, Optional, Sequence, Tuple
 
 try:
-    from antwar.core import (
+    from core import (
         MAX_ROUND,
         MAP_PROPERTY,
         Ant,
@@ -22,9 +22,9 @@ try:
         is_valid_pos,
     )
 except ModuleNotFoundError as exc:
-    if exc.name != "antwar":
+    if exc.name != "core":
         raise
-    from AI.ai_greedy.antwar.core import (
+    from AI.ai_greedy.core import (
         MAX_ROUND,
         MAP_PROPERTY,
         Ant,

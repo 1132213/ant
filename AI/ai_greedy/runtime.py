@@ -19,7 +19,7 @@ from SDK.model import Operation as SDKOperation
 from SDK.runtime import MatchRuntime
 
 try:
-    from antwar.core import (
+    from core import (
         MAP_SIZE,
         Ant,
         AntState,
@@ -33,9 +33,9 @@ try:
         TowerType,
     )
 except ModuleNotFoundError as exc:
-    if exc.name != "antwar":
+    if exc.name != "core":
         raise
-    from AI.ai_greedy.antwar.core import (
+    from AI.ai_greedy.core import (
         MAP_SIZE,
         Ant,
         AntState,
