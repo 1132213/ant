@@ -1,7 +1,9 @@
 try:
     from ai_greedy import AI
     from main import main
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name not in {"ai_greedy", "main"}:
+        raise
     from AI.ai_greedy import AI
     from AI.main import main
 

@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from AI.ai_greedy import GreedyAgent, GreedyHeuristicFallbackAgent
+from AI.ai_greedy import GreedyAgent, GreedyHeuristicFallbackAgent, GreedyPlanner
 from AI.ai_mcts import MCTSAgent
 from AI.ai_random import RandomAgent
+from AI.greedy_runtime import info_from_state
 from SDK.actions import ActionCatalog
 from SDK.backend import load_backend
 from SDK.constants import OperationType
@@ -82,6 +83,14 @@ def test_random_agent_selects_non_empty_legal_bundle() -> None:
     assert bundle in bundles
 
 
+def test_action_catalog_tolerates_stale_ant_paths() -> None:
+    state = GameState.initial(seed=5)
+    state.ants.append(Ant(99, 1, 17, 9, hp=10, level=0, age=32, path=[4, 4, 4]))
+    catalog = ActionCatalog(max_actions=16)
+    bundles = catalog.build(state, 0)
+    assert bundles
+
+
 def test_greedy_module_has_no_native_runtime_import() -> None:
     content = Path("AI/ai_greedy.py").read_text()
     assert "native_antwar" not in content
@@ -120,6 +129,36 @@ def test_greedy_runs_on_python_state_without_native_backend() -> None:
     operations = agent.choose_operations(state, 0)
     assert isinstance(operations, list)
     assert all(hasattr(operation, "to_protocol_tokens") for operation in operations)
+
+
+def test_greedy_sell_planning_avoids_factorial_enumeration(monkeypatch) -> None:
+    import itertools
+
+    def explode(*args, **kwargs):
+        raise AssertionError("factorial sell search should not run")
+
+    monkeypatch.setattr(itertools, "permutations", explode)
+
+    state = GameState.initial(seed=11)
+    state.coins[0] = 10000
+    built = 0
+    for x, y in state.strategic_slots(0):
+        operation = Operation(OperationType.BUILD_TOWER, x, y)
+        if not state.can_apply_operation(0, operation):
+            continue
+        state.apply_operation(0, operation)
+        built += 1
+        if built == 4:
+            break
+    assert built == 4
+
+    planner = GreedyPlanner()
+    planner._prepare_new_match(0)
+    info = info_from_state(state, player=0, seed=11)
+    coins, towers, operations = planner._try_sell(10, state.tower_count(0), 150, info)
+    assert coins >= 10
+    assert towers <= state.tower_count(0)
+    assert all(operation.op_type == OperationType.DOWNGRADE_TOWER for operation in operations)
 
 
 def test_greedy_matches_recorded_oracle_corpus() -> None:

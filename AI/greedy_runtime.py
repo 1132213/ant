@@ -577,18 +577,46 @@ class GameInfo:
         player = ant.player
         x, y = PLAYER_BASES[player]
         visited = [[False for _ in range(MAP_SIZE)] for _ in range(MAP_SIZE)]
+        enemy_base = PLAYER_BASES[player ^ 1]
         for move in ant.path:
+            if not 0 <= move < len(OFFSET[y % 2]):
+                return
             if not visited[x][y]:
                 visited[x][y] = True
                 self.pheromone[player][x][y] += tau
                 if self.pheromone[player][x][y] < PHEROMONE_MIN:
                     self.pheromone[player][x][y] = PHEROMONE_MIN
-            x += OFFSET[y % 2][move][0]
-            y += OFFSET[y % 2][move][1]
+            next_x = x + OFFSET[y % 2][move][0]
+            next_y = y + OFFSET[y % 2][move][1]
+            if not is_valid_pos(next_x, next_y):
+                return
+            if (next_x, next_y) != enemy_base and not is_path(next_x, next_y):
+                return
+            x = next_x
+            y = next_y
         if not visited[x][y]:
             self.pheromone[player][x][y] += tau
             if self.pheromone[player][x][y] < PHEROMONE_MIN:
                 self.pheromone[player][x][y] = PHEROMONE_MIN
+
+    @staticmethod
+    def sanitize_ant_path(ant: Ant) -> None:
+        x, y = PLAYER_BASES[ant.player]
+        enemy_base = PLAYER_BASES[ant.player ^ 1]
+        for move in ant.path:
+            if not 0 <= move < len(OFFSET[y % 2]):
+                ant.path.clear()
+                return
+            x += OFFSET[y % 2][move][0]
+            y += OFFSET[y % 2][move][1]
+            if not is_valid_pos(x, y):
+                ant.path.clear()
+                return
+            if (x, y) != enemy_base and not is_path(x, y):
+                ant.path.clear()
+                return
+        if (x, y) != (ant.x, ant.y):
+            ant.path.clear()
 
     def global_pheromone_attenuation(self) -> None:
         for player in range(2):
@@ -1018,6 +1046,8 @@ class GreedyController:
                 move = get_direction(known.x, known.y, ant.x, ant.y)
                 if move >= 0:
                     known.path.append(move)
+                else:
+                    known.path.clear()
             known.x = ant.x
             known.y = ant.y
             known.hp = ant.hp
@@ -1026,7 +1056,9 @@ class GreedyController:
             known.state = ant.state
             known.evasion = 0
             known.deflector = False
+            self.info.sanitize_ant_path(known)
             return
+        self.info.sanitize_ant_path(ant)
         self.info.ants.append(ant)
 
 
@@ -1097,6 +1129,7 @@ def info_from_state(state, player: int = 0, seed: int = 0) -> GameInfo:
                     path,
                 )
             )
+            info.sanitize_ant_path(info.ants[-1])
 
     if hasattr(state, 'active_effects'):
         info.super_weapons = []

@@ -13,6 +13,14 @@ class Ant {
     int hp_limit;
 
   public:
+    enum Behavior {
+        Default,
+        Conservative,
+        Randomized,
+        Bewitched,
+        ControlFree,
+    };
+
     // 暂时...?
     std::vector<int> path;
     static const int age_limit = 32;
@@ -22,6 +30,13 @@ class Ant {
     bool all_frozen = false;
     bool is_chosen = false;
     bool invincible = false;
+    bool evasion = false;
+    Behavior behavior = Behavior::Default;
+    int behavior_rounds = 0;
+    int target_x = -1;
+    int target_y = -1;
+    bool has_pending_behavior = false;
+    Behavior pending_behavior = Behavior::Default;
     enum Status {
         Alive,   // Still alive
         Success, // Reach the other camp
@@ -40,14 +55,23 @@ class Ant {
     int get_hp_limit() const;
     int get_level() const;
     int get_path_len() const;
+    Behavior get_behavior() const;
+    bool is_control_immune() const;
 
     void increase_age();
+    void increase_behavior_rounds();
+    void set_behavior(Behavior new_behavior, bool reset_rounds = true);
+    void set_bewitch_target(int x, int y);
+    bool reached_target() const;
+    void set_pending_behavior_to(Behavior new_behavior);
+    void clear_pending_behavior();
 
     Status get_status() const;
 
     void set_hp(int change);
     void set_hp_true(int change);
     void move(int direction);
+    void teleport_to(int x, int y);
 };
 
 #endif

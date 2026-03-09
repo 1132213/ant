@@ -7,7 +7,9 @@ from typing import Iterable
 
 try:
     from common import BaseAgent
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name != "common":
+        raise
     from AI.common import BaseAgent
 
 from SDK.backend import load_backend

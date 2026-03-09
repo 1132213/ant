@@ -2,7 +2,9 @@ from __future__ import annotations
 
 try:
     from common import BaseAgent
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name != "common":
+        raise
     from AI.common import BaseAgent
 
 from SDK.actions import ActionBundle

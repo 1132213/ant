@@ -81,6 +81,7 @@ void init_game(Game &game, unsigned long long seed) {
     game.tower_id = 0;
     game.err_msg.clear();
     game.random_seed = seed;
+    game.rng_state = seed & ((1ULL << 48) - 1);
     game.record_file.clear();
     game.player0 = Player();
     game.player1 = Player();
@@ -372,8 +373,17 @@ struct NativeState {
             ant.age = age;
             ant.shield = 0;
             ant.defend = false;
+            ant.evasion = false;
             ant.is_frozen = (row[7] == static_cast<int>(Ant::Status::Frozen));
             ant.all_frozen = ant.is_frozen;
+            if (it != previous_ants.end()) {
+                ant.behavior = it->second.behavior;
+                ant.behavior_rounds = it->second.behavior_rounds;
+                ant.target_x = it->second.target_x;
+                ant.target_y = it->second.target_y;
+                ant.has_pending_behavior = it->second.has_pending_behavior;
+                ant.pending_behavior = it->second.pending_behavior;
+            }
             max_ant_id = std::max(max_ant_id, ant_id + 1);
         }
         game.ant_id = max_ant_id;

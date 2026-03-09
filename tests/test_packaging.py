@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
+import zipfile
 
 
 def _load_module(module_name: str, path: Path):
@@ -26,16 +27,51 @@ def _assert_packaged_layout(package_root: Path) -> None:
     assert (package_root / "tools" / "setup_native.py").exists()
 
 
-def _run_packaging_script(script_name: str, output_dir: Path) -> None:
+def _run_packaging_script(script_name: str, output_path: Path | None = None) -> Path:
+    command = ["bash", f"AI/{script_name}"]
+    if output_path is not None:
+        command.append(str(output_path))
+    completed = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return Path(completed.stdout.strip())
+
+
+def _assert_packaged_main_imports_without_optional_env_dependency(package_root: Path) -> None:
+    script = """
+import builtins
+import sys
+
+package_root = sys.argv[1]
+real_import = builtins.__import__
+
+def blocked(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "gymnasium" or name.startswith("gymnasium.") or name == "pettingzoo" or name.startswith("pettingzoo."):
+        raise ModuleNotFoundError(f"No module named '{name.split('.')[0]}'")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = blocked
+sys.path.insert(0, package_root)
+import main
+"""
     subprocess.run(
-        ["bash", f"AI/{script_name}", str(output_dir)],
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(package_root),
+        ],
         check=True,
     )
 
 
 def test_zip_rand_creates_runnable_layout(tmp_path: Path) -> None:
     package_root = tmp_path / "random-package"
-    _run_packaging_script("zip_rand.sh", package_root)
+    returned_path = _run_packaging_script("zip_rand.sh", package_root)
+    assert returned_path == package_root
     _assert_packaged_layout(package_root)
     sys.path.insert(0, str(package_root))
     try:
@@ -48,8 +84,8 @@ def test_zip_rand_creates_runnable_layout(tmp_path: Path) -> None:
 def test_zip_mcts_and_zip_greedy_include_expected_support_files(tmp_path: Path) -> None:
     greedy_root = tmp_path / "greedy-package"
     mcts_root = tmp_path / "mcts-package"
-    _run_packaging_script("zip_greedy.sh", greedy_root)
-    _run_packaging_script("zip_mcts.sh", mcts_root)
+    assert _run_packaging_script("zip_greedy.sh", greedy_root) == greedy_root
+    assert _run_packaging_script("zip_mcts.sh", mcts_root) == mcts_root
     _assert_packaged_layout(greedy_root)
     _assert_packaged_layout(mcts_root)
     assert (greedy_root / "greedy_runtime.py").exists()
@@ -82,15 +118,35 @@ def test_main_entrypoint_uses_supplied_ai_class(monkeypatch) -> None:
 
 
 def test_zip_script_runs_without_explicit_output_dir() -> None:
-    completed = subprocess.run(
-        ["bash", "AI/zip_rand.sh"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    package_root = Path(completed.stdout.strip())
+    archive_path = _run_packaging_script("zip_rand.sh")
+    package_root = archive_path.with_suffix("")
     try:
-        assert package_root.exists()
+        assert archive_path.exists()
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(package_root)
         _assert_packaged_layout(package_root)
     finally:
-        shutil.rmtree(package_root)
+        shutil.rmtree(package_root, ignore_errors=True)
+        archive_path.unlink(missing_ok=True)
+
+
+def test_zip_script_accepts_explicit_zip_output_path(tmp_path: Path) -> None:
+    archive_path = tmp_path / "custom-random.zip"
+    returned_path = _run_packaging_script("zip_rand.sh", archive_path)
+    package_root = tmp_path / "custom-random"
+    try:
+        assert returned_path == archive_path
+        assert archive_path.exists()
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(package_root)
+        _assert_packaged_layout(package_root)
+    finally:
+        shutil.rmtree(package_root, ignore_errors=True)
+
+
+def test_packaged_ais_do_not_require_gymnasium_for_main_import(tmp_path: Path) -> None:
+    for script_name in ("zip_rand.sh", "zip_greedy.sh", "zip_mcts.sh"):
+        package_root = tmp_path / script_name.replace(".sh", "")
+        returned_path = _run_packaging_script(script_name, package_root)
+        assert returned_path == package_root
+        _assert_packaged_main_imports_without_optional_env_dependency(package_root)

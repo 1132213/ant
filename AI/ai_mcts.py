@@ -5,12 +5,16 @@ import math
 
 try:
     from ai_greedy import GreedyHeuristicFallbackAgent
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name != "ai_greedy":
+        raise
     from AI.ai_greedy import GreedyHeuristicFallbackAgent
 
 try:
     from common import BaseAgent
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name != "common":
+        raise
     from AI.common import BaseAgent
 
 from SDK.actions import ActionBundle

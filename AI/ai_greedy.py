@@ -6,7 +6,9 @@ from typing import Iterable
 
 try:
     from common import BaseAgent
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name != "common":
+        raise
     from AI.common import BaseAgent
 
 from SDK.actions import ActionBundle
@@ -25,7 +27,9 @@ try:
         info_from_state,
         is_valid_pos,
     )
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name != "greedy_runtime":
+        raise
     from AI.greedy_runtime import (
         GreedyController,
         GameInfo,
@@ -338,6 +342,129 @@ class GreedyPlanner:
                 best_value = value
         return best
 
+    def _search_budget(self, info) -> int:
+        nearest_enemy = _nearest_ant_to_base(self.side, info)
+        if self.memory.current_round < 24 and nearest_enemy >= 8 and self.memory.mode >= 0:
+            return min(SEARCH_SELECT_BUDGET, 32)
+        if self.memory.current_round < 80 and nearest_enemy >= 6 and self.memory.mode >= 0:
+            return min(SEARCH_SELECT_BUDGET, 48)
+        if self.memory.current_round >= 460 or nearest_enemy <= 4 or self.memory.mode < 0:
+            return min(SEARCH_SELECT_BUDGET, 96)
+        if self.memory.current_round >= 320:
+            return min(SEARCH_SELECT_BUDGET, 64)
+        return min(SEARCH_SELECT_BUDGET, 64)
+
+    def _evaluation_horizon(self, info) -> int:
+        del info
+        return 60
+
+    def _root_choice_stats(self, root: SearchNode) -> tuple[int, float, float]:
+        best_id = -1
+        best_val = -1e18
+        second_val = -1e18
+        for child_id in root.children:
+            child_val = self.nodes[child_id].max_val
+            if child_val > best_val:
+                second_val = best_val
+                best_val = child_val
+                best_id = child_id
+            elif child_val > second_val:
+                second_val = child_val
+        return best_id, best_val, second_val
+
+    def _candidate_positions(
+        self,
+        anchors: Iterable[tuple[int, int]],
+        radius: int,
+        max_distance_to_enemy_base: int | None = None,
+    ) -> list[tuple[int, int]]:
+        candidates: set[tuple[int, int]] = set()
+        enemy_base = _slot(self.enemy, BASE_SLOT)
+        for anchor_x, anchor_y in anchors:
+            for x in range(max(0, anchor_x - radius), min(18, anchor_x + radius) + 1):
+                for y in range(max(0, anchor_y - radius), min(18, anchor_y + radius) + 1):
+                    if not is_valid_pos(x, y):
+                        continue
+                    if hex_distance(anchor_x, anchor_y, x, y) > radius:
+                        continue
+                    if max_distance_to_enemy_base is not None and hex_distance(x, y, enemy_base[0], enemy_base[1]) > max_distance_to_enemy_base:
+                        continue
+                    candidates.add((x, y))
+        return sorted(candidates)
+
+    def _tower_sell_priority(self, info, tower) -> tuple[float, int]:
+        tower_type = _tower_kind(tower)
+        my_base = _slot(self.side, BASE_SLOT)
+        enemy_base = _slot(self.enemy, BASE_SLOT)
+        pressure = 0.0
+        for ant in info.ants:
+            if _as_int(ant.player) != self.enemy or not ant.is_alive():
+                continue
+            distance = hex_distance(_as_int(ant.x), _as_int(ant.y), _as_int(tower.x), _as_int(tower.y))
+            if distance <= 6:
+                pressure += max(0.0, 7 - distance) * (1.0 + _as_int(ant.level) * 0.5)
+
+        base_distance = hex_distance(_as_int(tower.x), _as_int(tower.y), my_base[0], my_base[1])
+        frontline_distance = hex_distance(_as_int(tower.x), _as_int(tower.y), enemy_base[0], enemy_base[1])
+        tower_level = 0 if tower_type == TowerType.BASIC else (1 if tower_type.value < 10 else 2)
+        refund = (
+            _as_int(info.destroy_tower_income(_as_int(info.tower_num_of_player(self.side))))
+            if tower_type == TowerType.BASIC
+            else _as_int(info.downgrade_tower_income(int(tower_type)))
+        )
+        priority = (
+            base_distance * 4.0
+            - pressure * 6.0
+            - tower_level * 12.0
+            + frontline_distance * 0.8
+            + refund * 0.05
+        )
+        return priority, _as_int(tower.id)
+
+    def _evaluate_sell_order(
+        self,
+        info,
+        tower_order: list[int],
+        coins: int,
+        towers: int,
+        coin_need: int,
+    ) -> tuple[int, int, list[Operation], int]:
+        new_sim = Simulator(info)
+        new_info = new_sim.info
+        new_coins = coins
+        new_towers = towers
+        operations: list[Operation] = []
+
+        for tower_id in tower_order:
+            tower = _find_tower_by_id(new_info, tower_id)
+            if tower is None:
+                continue
+            tower_type = _tower_kind(tower)
+            if tower_type == TowerType.BASIC:
+                new_coins += _as_int(new_info.destroy_tower_income(new_towers))
+                new_towers -= 1
+            else:
+                new_coins += _as_int(new_info.downgrade_tower_income(int(tower_type)))
+            operations.append(_sdk_operation(OperationType.DOWNGRADE_TOWER, tower_id))
+            if new_coins >= coin_need:
+                break
+
+        if new_coins < coin_need:
+            return coins, towers, [], -1
+
+        for operation in operations:
+            new_sim.add_operation_of_player(self.side, operation)
+        new_sim.apply_operations_of_player(self.side)
+        value = 48
+        base_hp = _as_int(new_info.bases[self.side].hp)
+        for turn in range(1, 49):
+            if not new_sim.fast_next_round(self.side):
+                break
+            if _as_int(new_info.bases[self.side].hp) < base_hp:
+                value = turn
+                break
+        return new_coins, new_towers, operations, value
+
     def _can_build_or_upgrade(
         self,
         code: int,
@@ -512,21 +639,23 @@ class GreedyPlanner:
         offset = _as_int(info.round) - self.memory.current_round
         if offset < 60:
             node.dis_vals[offset] = _nearest_ant_to_base(self.side, info)
+        horizon = self._evaluation_horizon(info)
+        horizon_end = self.memory.current_round + horizon
 
         safe_val = 0
         if self.memory.current_round > 60:
             safe_val = _safe_value(self.side, info)
             node.safe = safe_val == 0
 
-        ruin_round = self.memory.current_round + 60
+        ruin_round = horizon_end
         fail_flag = False
         if _as_int(info.bases[self.side].hp) <= self.memory.current_hp - 1:
             fail_flag = True
             ruin_round = node.fail_round
 
         if not fail_flag:
-            node.fail_round = self.memory.current_round + 60
-            for turn in range(_as_int(info.round), self.memory.current_round + 60):
+            node.fail_round = horizon_end
+            for turn in range(_as_int(info.round), horizon_end):
                 if not sim.fast_next_round(self.side):
                     break
                 node.dis_vals[turn - self.memory.current_round] = _nearest_ant_to_base(self.side, info)
@@ -537,7 +666,7 @@ class GreedyPlanner:
                     break
 
         if _as_int(info.bases[self.side].hp) > self.memory.current_hp - 2:
-            for turn in range(_as_int(info.round), self.memory.current_round + 60):
+            for turn in range(_as_int(info.round), horizon_end):
                 if not sim.fast_next_round(self.side):
                     break
                 node.dis_vals[turn - self.memory.current_round] = _nearest_ant_to_base(self.side, info)
@@ -763,13 +892,12 @@ class GreedyPlanner:
         return coins, towers, []
 
     def _try_sell(self, coins: int, towers: int, coin_need: int, info) -> tuple[int, int, list[Operation]]:
-        tower_ids = [
-            _as_int(tower.id)
+        sellable_towers = [
+            tower
             for tower in info.towers
             if _as_int(tower.player) == self.side and not info.is_shielded_by_emp(self.side, _as_int(tower.x), _as_int(tower.y))
         ]
-        valid_count = len(tower_ids)
-        if valid_count == 0:
+        if not sellable_towers:
             return coins, towers, []
 
         sim = Simulator(info)
@@ -783,51 +911,37 @@ class GreedyPlanner:
 
         max_round = -1
         max_coins = coins
+        max_towers = towers
         best_operations: list[Operation] = []
-        from itertools import permutations
+        prioritized = sorted(sellable_towers, key=lambda tower: self._tower_sell_priority(info, tower), reverse=True)
+        tower_ids = [_as_int(tower.id) for tower in prioritized]
+        basic_ids = [_as_int(tower.id) for tower in prioritized if _tower_kind(tower) == TowerType.BASIC]
+        advanced_ids = [_as_int(tower.id) for tower in prioritized if _tower_kind(tower) != TowerType.BASIC]
+        candidate_orders = [
+            tower_ids,
+            advanced_ids + basic_ids,
+            basic_ids + advanced_ids,
+            list(reversed(tower_ids)),
+        ]
 
-        for ordering in permutations(range(valid_count)):
-            operations: list[Operation] = []
-            new_sim = Simulator(info)
-            new_info = new_sim.info
-            new_coins = coins
-            new_towers = towers
-            valid = False
-            for position in ordering:
-                tower_id = tower_ids[position]
-                tower = _find_tower_by_id(new_info, tower_id)
-                if tower is None:
-                    continue
-                if _tower_kind(tower) == TowerType.BASIC:
-                    new_coins += _as_int(new_info.destroy_tower_income(new_towers))
-                    new_towers -= 1
-                else:
-                    new_coins += _as_int(new_info.downgrade_tower_income(int(_tower_kind(tower))))
-                operations.append(_sdk_operation(OperationType.DOWNGRADE_TOWER, tower_id))
-                if new_coins >= coin_need:
-                    valid = True
-                    break
-            if not valid:
+        seen_orders: set[tuple[int, ...]] = set()
+        for ordering in candidate_orders:
+            if not ordering:
                 continue
-            for operation in operations:
-                new_sim.add_operation_of_player(self.side, operation)
-            new_sim.apply_operations_of_player(self.side)
-            value = 48
-            base_hp = _as_int(new_info.bases[self.side].hp)
-            for turn in range(1, 49):
-                if not new_sim.fast_next_round(self.side):
-                    break
-                if _as_int(new_info.bases[self.side].hp) < base_hp:
-                    value = turn
-                    break
+            signature = tuple(ordering)
+            if signature in seen_orders:
+                continue
+            seen_orders.add(signature)
+            new_coins, new_towers, operations, value = self._evaluate_sell_order(info, ordering, coins, towers, coin_need)
             if value > max_round:
                 max_round = value
                 max_coins = new_coins
+                max_towers = new_towers
                 best_operations = operations
 
         if max_round < min(24, fail_round):
             return coins, towers, []
-        return max_coins, towers, best_operations
+        return max_coins, max_towers, best_operations
 
     def _try_use_storm(self, info, all_in: bool) -> list[Operation]:
         operations: list[Operation] = []
@@ -848,28 +962,30 @@ class GreedyPlanner:
 
         best_score = -1
         best_target: tuple[int, int] | None = None
-        for x in range(19):
-            for y in range(19):
-                if not is_valid_pos(x, y):
-                    continue
-                sim = Simulator(info)
-                for operation in operations:
-                    sim.add_operation_of_player(self.side, operation)
-                sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_LIGHTNING_STORM, x, y))
-                sim.apply_operations_of_player(self.side)
-                fail_round = 32
-                for turn in range(32):
-                    if not sim.fast_next_round(self.side):
-                        break
-                    if _as_int(sim.info.bases[self.side].hp) < _as_int(info.bases[self.side].hp):
-                        fail_round = turn
-                        break
-                if fail_round < 24:
-                    continue
-                score = _as_int(sim.info.die_count[self.enemy]) + fail_round
-                if score > best_score:
-                    best_score = score
-                    best_target = (x, y)
+        enemy_anchors = [
+            (_as_int(ant.x), _as_int(ant.y))
+            for ant in info.ants
+            if _as_int(ant.player) == self.enemy and ant.is_alive()
+        ]
+        for x, y in self._candidate_positions(enemy_anchors, radius=3):
+            sim = Simulator(info)
+            for operation in operations:
+                sim.add_operation_of_player(self.side, operation)
+            sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_LIGHTNING_STORM, x, y))
+            sim.apply_operations_of_player(self.side)
+            fail_round = 32
+            for turn in range(32):
+                if not sim.fast_next_round(self.side):
+                    break
+                if _as_int(sim.info.bases[self.side].hp) < _as_int(info.bases[self.side].hp):
+                    fail_round = turn
+                    break
+            if fail_round < 24:
+                continue
+            score = _as_int(sim.info.die_count[self.enemy]) + fail_round
+            if score > best_score:
+                best_score = score
+                best_target = (x, y)
         if best_target is None:
             return []
         return operations + [_sdk_operation(OperationType.USE_LIGHTNING_STORM, best_target[0], best_target[1])]
@@ -921,45 +1037,47 @@ class GreedyPlanner:
 
         if can_emp:
             results: list[tuple[int, int, float]] = []
-            for x in range(19):
-                for y in range(19):
-                    if not is_valid_pos(x, y):
+            enemy_tower_anchors = [
+                (_as_int(tower.x), _as_int(tower.y))
+                for tower in info.towers
+                if _as_int(tower.player) == self.enemy
+            ]
+            for x, y in self._candidate_positions(enemy_tower_anchors, radius=3):
+                value = 0.0
+                for tower in info.towers:
+                    if _as_int(tower.player) == self.enemy and hex_distance(_as_int(tower.x), _as_int(tower.y), x, y) <= 3:
+                        if _tower_kind(tower) == TowerType.BASIC:
+                            value += 50
+                        elif _tower_kind(tower).value // 10 < 0:
+                            value += 60
+                        else:
+                            value += 80
+                if value < 100:
+                    continue
+                new_sim = Simulator(info)
+                for operation in operations:
+                    new_sim.add_operation_of_player(self.side, operation)
+                new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_EMP_BLASTER, x, y))
+                new_sim.apply_operations_of_player(self.side)
+                for _ in range(24):
+                    if not new_sim.fast_next_round(self.enemy):
+                        break
+                enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
+                if self.memory.current_round > 495:
+                    if enemy_hp >= base_enemy_hp:
                         continue
-                    value = 0.0
-                    for tower in info.towers:
-                        if _as_int(tower.player) == self.enemy and hex_distance(_as_int(tower.x), _as_int(tower.y), x, y) <= 3:
-                            if _tower_kind(tower) == TowerType.BASIC:
-                                value += 50
-                            elif _tower_kind(tower).value // 10 < 0:
-                                value += 60
-                            else:
-                                value += 80
-                    if value < 100:
+                elif self.memory.current_round > 460:
+                    if enemy_hp >= base_enemy_hp - 2:
                         continue
-                    new_sim = Simulator(info)
-                    for operation in operations:
-                        new_sim.add_operation_of_player(self.side, operation)
-                    new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_EMP_BLASTER, x, y))
-                    new_sim.apply_operations_of_player(self.side)
-                    for _ in range(24):
-                        if not new_sim.fast_next_round(self.enemy):
-                            break
-                    enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
-                    if self.memory.current_round > 495:
-                        if enemy_hp >= base_enemy_hp:
-                            continue
-                    elif self.memory.current_round > 460:
-                        if enemy_hp >= base_enemy_hp - 2:
-                            continue
-                    elif enemy_hp >= base_enemy_hp - 4:
-                        continue
-                    value += 100 * (base_enemy_hp - enemy_hp)
-                    enemy_base_x, enemy_base_y = _slot(self.enemy, BASE_SLOT)
-                    for code in range(1, 34):
-                        sx, sy = _slot(self.enemy, code)
-                        if hex_distance(sx, sy, x, y) <= 3:
-                            value += 3 - hex_distance(sx, sy, enemy_base_x, enemy_base_y) * 0.01
-                    results.append((x, y, value))
+                elif enemy_hp >= base_enemy_hp - 4:
+                    continue
+                value += 100 * (base_enemy_hp - enemy_hp)
+                enemy_base_x, enemy_base_y = _slot(self.enemy, BASE_SLOT)
+                for code in range(1, 34):
+                    sx, sy = _slot(self.enemy, code)
+                    if hex_distance(sx, sy, x, y) <= 3:
+                        value += 3 - hex_distance(sx, sy, enemy_base_x, enemy_base_y) * 0.01
+                results.append((x, y, value))
             if results and not enemy_storm:
                 best = self._best_value(results, 2)
                 assert best is not None
@@ -970,65 +1088,62 @@ class GreedyPlanner:
 
         if can_deflect or can_evasion:
             results: list[tuple[int, int, float, bool]] = []
+            ally_anchors = [
+                (_as_int(ant.x), _as_int(ant.y))
+                for ant in info.ants
+                if _as_int(ant.player) == self.side and ant.is_alive()
+            ]
             if can_evasion:
-                for x in range(19):
-                    for y in range(19):
-                        if not is_valid_pos(x, y):
+                for x, y in self._candidate_positions(ally_anchors, radius=3):
+                    value = 0.0
+                    evasions = 0
+                    min_distance = 100
+                    for ant in info.ants:
+                        if _as_int(ant.player) == self.side and hex_distance(_as_int(ant.x), _as_int(ant.y), x, y) <= 3 and ant.is_alive():
+                            value += _as_int(ant.level) + 1
+                            evasions += 1
+                            distance = hex_distance(_as_int(ant.x), _as_int(ant.y), *_slot(self.enemy, BASE_SLOT))
+                            if distance < min_distance:
+                                min_distance = distance
+                    if self.memory.current_round <= 506 and min_distance > 5:
+                        continue
+                    if evasions < 3 or (self.memory.current_round > 460 and evasions < 2):
+                        continue
+                    new_sim = Simulator(info)
+                    for operation in operations:
+                        new_sim.add_operation_of_player(self.side, operation)
+                    new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_EMERGENCY_EVASION, x, y))
+                    new_sim.apply_operations_of_player(self.side)
+                    for _ in range(24):
+                        if not new_sim.fast_next_round(self.enemy):
+                            break
+                    enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
+                    if self.memory.current_round > 506:
+                        if enemy_hp >= base_enemy_hp and _as_int(new_sim.info.die_count[self.side]) >= base_die_count - 2:
                             continue
-                        value = 0.0
-                        evasions = 0
-                        min_distance = 100
-                        for ant in info.ants:
-                            if _as_int(ant.player) == self.side and hex_distance(_as_int(ant.x), _as_int(ant.y), x, y) <= 3 and ant.is_alive():
-                                value += _as_int(ant.level) + 1
-                                evasions += 1
-                                distance = hex_distance(_as_int(ant.x), _as_int(ant.y), *_slot(self.enemy, BASE_SLOT))
-                                if distance < min_distance:
-                                    min_distance = distance
-                        if self.memory.current_round <= 506 and min_distance > 5:
+                    elif self.memory.current_round > 460:
+                        if enemy_hp >= base_enemy_hp - 2:
                             continue
-                        if evasions < 3 or (self.memory.current_round > 460 and evasions < 2):
-                            continue
-                        new_sim = Simulator(info)
-                        for operation in operations:
-                            new_sim.add_operation_of_player(self.side, operation)
-                        new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_EMERGENCY_EVASION, x, y))
-                        new_sim.apply_operations_of_player(self.side)
-                        for _ in range(24):
-                            if not new_sim.fast_next_round(self.enemy):
-                                break
-                        enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
-                        if self.memory.current_round > 506:
-                            if enemy_hp >= base_enemy_hp and _as_int(new_sim.info.die_count[self.side]) >= base_die_count - 2:
-                                continue
-                        elif self.memory.current_round > 460:
-                            if enemy_hp >= base_enemy_hp - 2:
-                                continue
-                        elif enemy_hp >= base_enemy_hp - 3:
-                            continue
-                        value += 100 * (base_enemy_hp - enemy_hp)
-                        results.append((x, y, value, True))
+                    elif enemy_hp >= base_enemy_hp - 3:
+                        continue
+                    value += 100 * (base_enemy_hp - enemy_hp)
+                    results.append((x, y, value, True))
             if can_deflect and not results:
                 storm_x, storm_y = _slot(self.enemy, STORM_SLOT)
-                for x in range(19):
-                    for y in range(19):
-                        if not is_valid_pos(x, y):
-                            continue
-                        if hex_distance(x, y, *_slot(self.enemy, BASE_SLOT)) > 4:
-                            continue
-                        new_sim = Simulator(info)
-                        for operation in operations:
-                            new_sim.add_operation_of_player(self.side, operation)
-                        new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_DEFLECTOR, x, y))
-                        new_sim.apply_operations_of_player(self.side)
-                        for _ in range(24):
-                            if not new_sim.fast_next_round(self.enemy):
-                                break
-                        enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
-                        if (self.memory.current_round > 460 and enemy_hp >= base_enemy_hp - 2) or enemy_hp >= base_enemy_hp - 3:
-                            continue
-                        value = 100 * (base_enemy_hp - enemy_hp) - hex_distance(x, y, storm_x, storm_y)
-                        results.append((x, y, value, False))
+                for x, y in self._candidate_positions(ally_anchors, radius=3, max_distance_to_enemy_base=4):
+                    new_sim = Simulator(info)
+                    for operation in operations:
+                        new_sim.add_operation_of_player(self.side, operation)
+                    new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_DEFLECTOR, x, y))
+                    new_sim.apply_operations_of_player(self.side)
+                    for _ in range(24):
+                        if not new_sim.fast_next_round(self.enemy):
+                            break
+                    enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
+                    if (self.memory.current_round > 460 and enemy_hp >= base_enemy_hp - 2) or enemy_hp >= base_enemy_hp - 3:
+                        continue
+                    value = 100 * (base_enemy_hp - enemy_hp) - hex_distance(x, y, storm_x, storm_y)
+                    results.append((x, y, value, False))
             if results:
                 best = self._best_value(results, 2)
                 assert best is not None
@@ -1075,39 +1190,41 @@ class GreedyPlanner:
         base_enemy_hp = _as_int(enemy_sim.info.bases[self.enemy].hp)
 
         results: list[tuple[int, int, float]] = []
-        for x in range(19):
-            for y in range(19):
-                if not is_valid_pos(x, y):
-                    continue
-                value = 0.0
-                for tower in info.towers:
-                    if _as_int(tower.player) == self.enemy and hex_distance(_as_int(tower.x), _as_int(tower.y), x, y) <= 3:
-                        if _tower_kind(tower) == TowerType.BASIC:
-                            value += 50
-                        elif _tower_kind(tower).value // 10 < 0:
-                            value += 60
-                        else:
-                            value += 80
-                if value < 100:
-                    continue
-                new_sim = Simulator(info)
-                for operation in operations:
-                    new_sim.add_operation_of_player(self.side, operation)
-                new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_EMP_BLASTER, x, y))
-                new_sim.apply_operations_of_player(self.side)
-                for _ in range(24):
-                    if not new_sim.fast_next_round(self.enemy):
-                        break
-                enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
-                if enemy_hp >= base_enemy_hp - 4:
-                    continue
-                value += 100 * (base_enemy_hp - enemy_hp)
-                enemy_base_x, enemy_base_y = _slot(self.enemy, BASE_SLOT)
-                for code in range(1, 34):
-                    sx, sy = _slot(self.enemy, code)
-                    if hex_distance(sx, sy, x, y) <= 3:
-                        value += 3 - hex_distance(sx, sy, enemy_base_x, enemy_base_y) * 0.01
-                results.append((x, y, value))
+        enemy_tower_anchors = [
+            (_as_int(tower.x), _as_int(tower.y))
+            for tower in info.towers
+            if _as_int(tower.player) == self.enemy
+        ]
+        for x, y in self._candidate_positions(enemy_tower_anchors, radius=3):
+            value = 0.0
+            for tower in info.towers:
+                if _as_int(tower.player) == self.enemy and hex_distance(_as_int(tower.x), _as_int(tower.y), x, y) <= 3:
+                    if _tower_kind(tower) == TowerType.BASIC:
+                        value += 50
+                    elif _tower_kind(tower).value // 10 < 0:
+                        value += 60
+                    else:
+                        value += 80
+            if value < 100:
+                continue
+            new_sim = Simulator(info)
+            for operation in operations:
+                new_sim.add_operation_of_player(self.side, operation)
+            new_sim.add_operation_of_player(self.side, _sdk_operation(OperationType.USE_EMP_BLASTER, x, y))
+            new_sim.apply_operations_of_player(self.side)
+            for _ in range(24):
+                if not new_sim.fast_next_round(self.enemy):
+                    break
+            enemy_hp = _as_int(new_sim.info.bases[self.enemy].hp)
+            if enemy_hp >= base_enemy_hp - 4:
+                continue
+            value += 100 * (base_enemy_hp - enemy_hp)
+            enemy_base_x, enemy_base_y = _slot(self.enemy, BASE_SLOT)
+            for code in range(1, 34):
+                sx, sy = _slot(self.enemy, code)
+                if hex_distance(sx, sy, x, y) <= 3:
+                    value += 3 - hex_distance(sx, sy, enemy_base_x, enemy_base_y) * 0.01
+            results.append((x, y, value))
         if results:
             best = self._best_value(results, 2)
             assert best is not None
@@ -1157,11 +1274,26 @@ class GreedyPlanner:
         self.nodes = [root]
         self._evaluate(root)
         self._expand(root, is_root=True)
-        for _ in range(SEARCH_SELECT_BUDGET):
+        budget = self._search_budget(info)
+        stable_best = -1
+        stable_rounds = 0
+        for _ in range(budget):
             if len(self.nodes) >= MAX_NODE_COUNT - 10:
                 break
             if not self._select_expand():
                 break
+            best_id, best_val, second_val = self._root_choice_stats(root)
+            if best_id < 0:
+                continue
+            chosen = self.nodes[best_id]
+            margin = best_val - second_val if second_val > -1e17 else best_val
+            if best_id == stable_best and chosen.expand_count >= 4 and margin >= 6:
+                stable_rounds += 1
+                if stable_rounds >= 12:
+                    break
+            else:
+                stable_best = best_id
+                stable_rounds = 0
 
         max_id = -1
         max_val = -1e18

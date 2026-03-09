@@ -78,6 +78,14 @@ class AntStatus(IntEnum):
     FROZEN = 4
 
 
+class AntBehavior(IntEnum):
+    DEFAULT = 0
+    CONSERVATIVE = 1
+    RANDOM = 2
+    BEWITCHED = 3
+    CONTROL_FREE = 4
+
+
 class TowerType(IntEnum):
     BASIC = 0
     HEAVY = 1
@@ -135,12 +143,12 @@ TOWER_STATS = {
     TowerType.MORTAR: TowerStats(16, 4.0, 3),
     TowerType.HEAVY_PLUS: TowerStats(35, 2.0, 3),
     TowerType.ICE: TowerStats(15, 2.0, 2),
-    TowerType.CANNON: TowerStats(50, 3.0, 3),
+    TowerType.CANNON: TowerStats(10, 3.0, 3),
     TowerType.QUICK_PLUS: TowerStats(8, 0.5, 3),
     TowerType.DOUBLE: TowerStats(7, 1.0, 4),
     TowerType.SNIPER: TowerStats(15, 2.0, 6),
     TowerType.MORTAR_PLUS: TowerStats(35, 4.0, 4),
-    TowerType.PULSE: TowerStats(30, 3.0, 2),
+    TowerType.PULSE: TowerStats(12, 3.0, 2),
     TowerType.MISSILE: TowerStats(45, 6.0, 5),
 }
 
@@ -177,6 +185,19 @@ PHEROMONE_SUCCESS_BONUS = 10.0
 PHEROMONE_FAIL_BONUS = -5.0
 PHEROMONE_TOO_OLD_BONUS = -3.0
 MAX_ACTIONS = 96
+DEFAULT_MOVE_TEMPERATURE = 4.0
+BEWITCH_MOVE_TEMPERATURE = 1.5
+CROWDING_PENALTY = 1.25
+RANDOM_ANT_DECAY_TURNS = 5
+ANT_TELEPORT_INTERVAL = 10
+ANT_TELEPORT_RATIO = 0.2
+
+SPAWN_BEHAVIOR_WEIGHTS = (
+    (AntBehavior.DEFAULT, 0.5),
+    (AntBehavior.CONSERVATIVE, 0.2),
+    (AntBehavior.RANDOM, 0.15),
+    (AntBehavior.CONTROL_FREE, 0.15),
+)
 
 # These anchors are adapted from the curated high-ground order used by the expert bot,
 # but exposed with descriptive names rather than opaque slot codes.

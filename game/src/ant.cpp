@@ -38,7 +38,39 @@ int Ant::get_hp_limit() const { return hp_limit; }
 // Get the length of path
 int Ant::get_path_len() const { return path.size(); }
 
+Ant::Behavior Ant::get_behavior() const { return behavior; }
+
+bool Ant::is_control_immune() const { return behavior == Behavior::ControlFree; }
+
 void Ant::increase_age() { age++; }
+
+void Ant::increase_behavior_rounds() { behavior_rounds++; }
+
+void Ant::set_behavior(Behavior new_behavior, bool reset_rounds) {
+    if (is_control_immune() && new_behavior != Behavior::ControlFree)
+        return;
+    behavior = new_behavior;
+    if (reset_rounds)
+        behavior_rounds = 0;
+    if (behavior != Behavior::Bewitched) {
+        target_x = -1;
+        target_y = -1;
+    }
+}
+
+void Ant::set_bewitch_target(int x, int y) {
+    target_x = x;
+    target_y = y;
+}
+
+bool Ant::reached_target() const { return target_x == pos_x && target_y == pos_y; }
+
+void Ant::set_pending_behavior_to(Behavior new_behavior) {
+    has_pending_behavior = true;
+    pending_behavior = new_behavior;
+}
+
+void Ant::clear_pending_behavior() { has_pending_behavior = false; }
 
 // Get the status of the ant.
 Ant::Status Ant::get_status() const {
@@ -85,4 +117,9 @@ void Ant::move(int direction) {
 
     pos_x += d[pos_y % 2][direction][0];
     pos_y += d[pos_y % 2][direction][1];
+}
+
+void Ant::teleport_to(int x, int y) {
+    pos_x = x;
+    pos_y = y;
 }

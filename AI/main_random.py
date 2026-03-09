@@ -1,7 +1,9 @@
 try:
     from ai_random import AI
     from main import main
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name not in {"ai_random", "main"}:
+        raise
     from AI.ai_random import AI
     from AI.main import main
 

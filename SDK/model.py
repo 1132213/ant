@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from SDK.constants import (
     ANT_AGE_LIMIT,
+    AntBehavior,
     ANT_KILL_REWARD,
     ANT_MAX_HP,
     ANT_GENERATION_CYCLE,
@@ -54,6 +55,12 @@ class Ant:
     shield: int = 0
     deflector: bool = False
     frozen: bool = False
+    evasion: bool = False
+    behavior: AntBehavior = AntBehavior.DEFAULT
+    behavior_turns: int = 0
+    bewitch_target_x: int = -1
+    bewitch_target_y: int = -1
+    pending_behavior: AntBehavior | None = None
 
     def clone(self) -> Ant:
         return Ant(
@@ -69,6 +76,12 @@ class Ant:
             shield=self.shield,
             deflector=self.deflector,
             frozen=self.frozen,
+            evasion=self.evasion,
+            behavior=self.behavior,
+            behavior_turns=self.behavior_turns,
+            bewitch_target_x=self.bewitch_target_x,
+            bewitch_target_y=self.bewitch_target_y,
+            pending_behavior=self.pending_behavior,
         )
 
     @property
@@ -81,6 +94,28 @@ class Ant:
 
     def is_alive(self) -> bool:
         return self.status in (AntStatus.ALIVE, AntStatus.FROZEN) and self.hp > 0
+
+    @property
+    def control_immune(self) -> bool:
+        return self.behavior == AntBehavior.CONTROL_FREE
+
+    def set_behavior(
+        self,
+        behavior: AntBehavior,
+        *,
+        reset_turns: bool = True,
+        target: tuple[int, int] | None = None,
+    ) -> None:
+        if self.control_immune and behavior != AntBehavior.CONTROL_FREE:
+            return
+        self.behavior = behavior
+        if reset_turns:
+            self.behavior_turns = 0
+        if behavior == AntBehavior.BEWITCHED and target is not None:
+            self.bewitch_target_x, self.bewitch_target_y = target
+        elif behavior != AntBehavior.BEWITCHED:
+            self.bewitch_target_x = -1
+            self.bewitch_target_y = -1
 
     def refresh_status(self) -> None:
         if self.hp <= 0:

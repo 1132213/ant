@@ -2,12 +2,16 @@ from __future__ import annotations
 
 try:
     from ai import AI as PackagedAI
-except ImportError:  # pragma: no cover - repository layout
+except ModuleNotFoundError as exc:  # pragma: no cover - repository layout
+    if exc.name != "ai":
+        raise
     PackagedAI = None
 
 try:
     from protocol import run_agent
-except ImportError:  # pragma: no cover - repository entrypoint fallback
+except ModuleNotFoundError as exc:  # pragma: no cover - repository entrypoint fallback
+    if exc.name != "protocol":
+        raise
     from AI.protocol import run_agent
 
 

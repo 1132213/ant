@@ -1,21 +1,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Iterable
 
 import numpy as np
 
 from SDK.constants import (
+    AntBehavior,
+    ANT_TELEPORT_INTERVAL,
+    ANT_TELEPORT_RATIO,
     BASE_HP,
     BASE_UPGRADE_COST,
+    BEWITCH_MOVE_TEMPERATURE,
     BASIC_INCOME,
     CENTERLINE_WEIGHTS,
+    CROWDING_PENALTY,
+    DEFAULT_MOVE_TEMPERATURE,
     HIGHLAND_CELLS,
     INITIAL_COINS,
     MAP_SIZE,
     MAX_ROUND,
     OFFSET,
     OperationType,
+    PATH_CELLS,
     PHEROMONE_ATTENUATION,
     PHEROMONE_FAIL_BONUS,
     PHEROMONE_FLOOR,
@@ -24,6 +32,8 @@ from SDK.constants import (
     PHEROMONE_TOO_OLD_BONUS,
     PLAYER_BASES,
     PLAYER_COUNT,
+    RANDOM_ANT_DECAY_TURNS,
+    SPAWN_BEHAVIOR_WEIGHTS,
     STRATEGIC_BUILD_ORDER,
     SUPER_WEAPON_STATS,
     SuperWeaponType,
@@ -40,6 +50,36 @@ from SDK.constants import (
 )
 from SDK.geometry import hex_distance, is_highland, is_path, is_valid_pos, neighbors
 from SDK.model import Ant, Base, Operation, Tower, WeaponEffect
+
+RNG_MASK = (1 << 48) - 1
+RNG_MULTIPLIER = 25214903917
+RNG_INCREMENT = 11
+
+
+@lru_cache(maxsize=2)
+def _half_cells(player: int) -> tuple[tuple[int, int], ...]:
+    own_base = PLAYER_BASES[player]
+    enemy_base = PLAYER_BASES[1 - player]
+    cells: list[tuple[int, int]] = []
+    for x in range(MAP_SIZE):
+        for y in range(MAP_SIZE):
+            if not is_path(x, y):
+                continue
+            if hex_distance(x, y, *own_base) <= hex_distance(x, y, *enemy_base):
+                cells.append((x, y))
+    return tuple(cells)
+
+
+def _softmax_choice(weights: list[float], temperature: float) -> list[float]:
+    if not weights:
+        return []
+    scale = max(temperature, 1e-6)
+    max_weight = max(weights)
+    exps = [float(np.exp((weight - max_weight) / scale)) for weight in weights]
+    total = sum(exps)
+    if total <= 0:
+        return [1.0 / len(weights)] * len(weights)
+    return [value / total for value in exps]
 
 
 @dataclass(slots=True)
@@ -78,12 +118,14 @@ class GameState:
     next_tower_id: int = 0
     terminal: bool = False
     winner: int | None = None
+    rng_state: int = 0
 
     @classmethod
     def initial(cls, seed: int = 0) -> GameState:
         state = cls(seed=seed)
         state.bases = [Base(0, *PLAYER_BASES[0], hp=BASE_HP), Base(1, *PLAYER_BASES[1], hp=BASE_HP)]
         state._init_pheromone(seed)
+        state.rng_state = seed & RNG_MASK
         return state
 
     def clone(self) -> GameState:
@@ -105,6 +147,7 @@ class GameState:
             next_tower_id=self.next_tower_id,
             terminal=self.terminal,
             winner=self.winner,
+            rng_state=self.rng_state,
         )
 
     def _init_pheromone(self, seed: int) -> None:
@@ -114,6 +157,29 @@ class GameState:
                 for y in range(MAP_SIZE):
                     value = (25214903917 * value) & ((1 << 48) - 1)
                     self.pheromone[player, x, y] = np.float32(value * (2 ** -46) + 8.0)
+
+    def _next_random(self) -> int:
+        self.rng_state = (RNG_MULTIPLIER * self.rng_state + RNG_INCREMENT) & RNG_MASK
+        return self.rng_state
+
+    def _random_float(self) -> float:
+        return self._next_random() / float(RNG_MASK + 1)
+
+    def _random_index(self, bound: int) -> int:
+        if bound <= 1:
+            return 0
+        return int(self._next_random() % bound)
+
+    def _sample_index(self, probabilities: list[float]) -> int:
+        if not probabilities:
+            return 0
+        threshold = self._random_float()
+        cumulative = 0.0
+        for index, probability in enumerate(probabilities):
+            cumulative += probability
+            if threshold <= cumulative:
+                return index
+        return len(probabilities) - 1
 
     def tower_count(self, player: int) -> int:
         return sum(1 for tower in self.towers if tower.player == player)
@@ -208,6 +274,24 @@ class GameState:
             if effect.weapon_type == weapon_type and effect.player == player:
                 return effect
         return None
+
+    def _ant_in_own_half(self, ant: Ant) -> bool:
+        own_base = PLAYER_BASES[ant.player]
+        enemy_base = PLAYER_BASES[1 - ant.player]
+        return hex_distance(ant.x, ant.y, *own_base) <= hex_distance(ant.x, ant.y, *enemy_base)
+
+    def _random_own_half_target(self, player: int) -> tuple[int, int]:
+        cells = _half_cells(player)
+        return cells[self._random_index(len(cells))]
+
+    def _control_ant(self, ant: Ant, behavior: AntBehavior, *, target: tuple[int, int] | None = None) -> None:
+        if ant.control_immune or not ant.is_alive():
+            return
+        ant.set_behavior(behavior, target=target)
+
+    def _maybe_control_free(self, ant: Ant, *, was_active: bool, is_active: bool) -> None:
+        if was_active and not is_active and ant.behavior != AntBehavior.CONTROL_FREE:
+            ant.set_behavior(AntBehavior.CONTROL_FREE)
 
     def _operation_income(self, player: int, operation: Operation, tower_count_hint: int | None = None) -> int:
         if operation.op_type == OperationType.BUILD_TOWER:
@@ -350,6 +434,7 @@ class GameState:
                 for ant in self.ants:
                     if ant.player == player and hex_distance(operation.arg0, operation.arg1, ant.x, ant.y) <= stats.attack_range:
                         ant.shield = 2
+                        ant.evasion = True
             self.active_effects.append(WeaponEffect(weapon_type, player, operation.arg0, operation.arg1, stats.duration))
             return
         if operation.op_type == OperationType.UPGRADE_GENERATION_SPEED:
@@ -370,6 +455,27 @@ class GameState:
                 illegal.append(operation)
         return illegal
 
+    def _prepare_ants_for_attack(self) -> None:
+        for ant in self.ants:
+            if ant.frozen:
+                ant.frozen = False
+                if ant.pending_behavior is not None:
+                    self._control_ant(ant, ant.pending_behavior)
+                    ant.pending_behavior = None
+            current_deflector = self.is_shielded_by_deflector(ant)
+            current_evasion = any(
+                effect.weapon_type == SuperWeaponType.EMERGENCY_EVASION
+                and effect.player == ant.player
+                and effect.in_range(ant.x, ant.y)
+                for effect in self.active_effects
+            )
+            self._maybe_control_free(ant, was_active=ant.deflector, is_active=current_deflector)
+            self._maybe_control_free(ant, was_active=ant.evasion, is_active=current_evasion)
+            ant.deflector = current_deflector
+            ant.evasion = current_evasion
+            ant.shield = 2 if current_evasion else 0
+            ant.refresh_status()
+
     def _apply_lightning_storm(self) -> None:
         for effect in self.active_effects:
             if effect.weapon_type != SuperWeaponType.LIGHTNING_STORM:
@@ -380,13 +486,8 @@ class GameState:
                     ant.refresh_status()
 
     def _attack_ants(self) -> None:
+        self._prepare_ants_for_attack()
         self._apply_lightning_storm()
-        for ant in self.ants:
-            ant.deflector = False
-            ant.frozen = False
-        for ant in self.ants:
-            ant.deflector = self.is_shielded_by_deflector(ant)
-            ant.refresh_status()
         for tower in self.towers:
             if self.is_shielded_by_emp(tower.player, tower.x, tower.y):
                 continue
@@ -396,6 +497,30 @@ class GameState:
             attacked = self._tower_attack(tower)
             if attacked:
                 tower.reset_cooldown()
+
+    def _apply_tower_control(self, tower: Tower, ant: Ant) -> None:
+        if not ant.is_alive():
+            return
+        if tower.tower_type == TowerType.ICE:
+            if ant.control_immune:
+                return
+            ant.frozen = True
+            ant.pending_behavior = AntBehavior.RANDOM
+            ant.refresh_status()
+            return
+        if tower.tower_type == TowerType.CANNON:
+            if self._ant_in_own_half(ant):
+                target = PLAYER_BASES[ant.player]
+            else:
+                target = self._random_own_half_target(ant.player)
+            self._control_ant(ant, AntBehavior.BEWITCHED, target=target)
+            return
+        if tower.tower_type == TowerType.PULSE:
+            self._control_ant(ant, AntBehavior.RANDOM)
+
+    def _damage_ant_from_tower(self, tower: Tower, ant: Ant) -> None:
+        ant.take_damage(tower.damage)
+        self._apply_tower_control(tower, ant)
 
     def _tower_attack(self, tower: Tower) -> bool:
         targets = self._find_targets(tower)
@@ -408,7 +533,7 @@ class GameState:
             if not local_targets:
                 break
             for ant in self._expand_attack_targets(tower, local_targets):
-                ant.take_damage(tower.damage, apply_freeze=tower.tower_type == TowerType.ICE)
+                self._damage_ant_from_tower(tower, ant)
                 attacked_any = True
         return attacked_any
 
@@ -441,17 +566,68 @@ class GameState:
     def _ants_in_range(self, player: int, x: int, y: int, attack_range: int) -> list[Ant]:
         return [ant for ant in self.ants if ant.player != player and ant.is_alive() and hex_distance(ant.x, ant.y, x, y) <= attack_range]
 
+    def _crowding_penalty(self, ant: Ant, x: int, y: int) -> float:
+        penalty = 0.0
+        for other in self.ants:
+            if other.ant_id == ant.ant_id or other.player != ant.player or not other.is_alive():
+                continue
+            distance = hex_distance(x, y, other.x, other.y)
+            if distance == 0:
+                penalty += 1.0
+            elif distance == 1:
+                penalty += 0.35
+        return penalty
+
+    def _move_candidates(self, ant: Ant, *, allow_backtrack: bool) -> list[tuple[int, int, int]]:
+        out: list[tuple[int, int, int]] = []
+        enemy_base = PLAYER_BASES[1 - ant.player]
+        own_base = PLAYER_BASES[ant.player]
+        for direction, nx, ny in neighbors(ant.x, ant.y):
+            if not allow_backtrack and ant.path and ant.path[-1] == (direction + 3) % 6:
+                continue
+            if (nx, ny) not in (enemy_base, own_base) and not is_path(nx, ny):
+                continue
+            if not is_valid_pos(nx, ny):
+                continue
+            out.append((direction, nx, ny))
+        return out
+
+    def _sample_move_from_scores(
+        self,
+        candidates: list[tuple[int, int, int]],
+        scores: list[float],
+        temperature: float,
+    ) -> int:
+        if not candidates:
+            return -1
+        probabilities = _softmax_choice(scores, temperature)
+        return candidates[self._sample_index(probabilities)][0]
+
     def _choose_ant_move(self, ant: Ant) -> int:
         target_x, target_y = PLAYER_BASES[1 - ant.player]
+        allow_backtrack = ant.behavior in {AntBehavior.RANDOM, AntBehavior.BEWITCHED}
+        candidates = self._move_candidates(ant, allow_backtrack=allow_backtrack)
+        if not candidates and not allow_backtrack:
+            candidates = self._move_candidates(ant, allow_backtrack=True)
+        if not candidates:
+            return -1
+
+        if ant.behavior == AntBehavior.RANDOM:
+            return candidates[self._random_index(len(candidates))][0]
+
+        if ant.behavior == AntBehavior.BEWITCHED and ant.bewitch_target_x >= 0 and ant.bewitch_target_y >= 0:
+            current_distance = hex_distance(ant.x, ant.y, ant.bewitch_target_x, ant.bewitch_target_y)
+            scores = []
+            for _, nx, ny in candidates:
+                next_distance = hex_distance(nx, ny, ant.bewitch_target_x, ant.bewitch_target_y)
+                crowd = self._crowding_penalty(ant, nx, ny)
+                scores.append((current_distance - next_distance) * 4.0 - CROWDING_PENALTY * crowd)
+            return self._sample_move_from_scores(candidates, scores, BEWITCH_MOVE_TEMPERATURE)
+
         current_distance = hex_distance(ant.x, ant.y, target_x, target_y)
-        best_direction = -1
-        best_weight = -1.0
-        best_raw = -1.0
-        for direction, nx, ny in neighbors(ant.x, ant.y):
-            if ant.path and ant.path[-1] == (direction + 3) % 6:
-                continue
-            if not is_path(nx, ny):
-                continue
+        weighted_scores: list[float] = []
+        raw_scores: list[float] = []
+        for _, nx, ny in candidates:
             pheromone = float(self.pheromone[ant.player, nx, ny])
             next_distance = hex_distance(nx, ny, target_x, target_y)
             if next_distance < current_distance:
@@ -460,12 +636,35 @@ class GameState:
                 weight = 1.0
             else:
                 weight = 0.75
-            weighted = pheromone * weight
-            if weighted > best_weight or (weighted == best_weight and pheromone > best_raw):
-                best_direction = direction
-                best_weight = weighted
-                best_raw = pheromone
-        return best_direction
+            crowd = self._crowding_penalty(ant, nx, ny)
+            raw = pheromone * weight
+            raw_scores.append(raw)
+            weighted_scores.append(raw - CROWDING_PENALTY * crowd)
+
+        if ant.behavior in (AntBehavior.CONSERVATIVE, AntBehavior.CONTROL_FREE):
+            best_index = max(range(len(candidates)), key=lambda index: (raw_scores[index], -index))
+            return candidates[best_index][0]
+        return self._sample_move_from_scores(candidates, weighted_scores, DEFAULT_MOVE_TEMPERATURE)
+
+    def _teleport_ants(self) -> None:
+        if ANT_TELEPORT_INTERVAL <= 0 or (self.round_index + 1) % ANT_TELEPORT_INTERVAL != 0:
+            return
+        eligible = [ant for ant in self.ants if ant.is_alive() and ant.behavior != AntBehavior.CONTROL_FREE]
+        if not eligible:
+            return
+        teleport_count = max(1, int(round(len(eligible) * ANT_TELEPORT_RATIO)))
+        chosen: list[Ant] = []
+        pool = list(eligible)
+        while pool and len(chosen) < teleport_count:
+            chosen.append(pool.pop(self._random_index(len(pool))))
+        legal_cells = list(PATH_CELLS)
+        for ant in chosen:
+            if not legal_cells:
+                break
+            target_x, target_y = legal_cells[self._random_index(len(legal_cells))]
+            ant.x = target_x
+            ant.y = target_y
+            ant.refresh_status()
 
     def _move_ants(self) -> None:
         for ant in self.ants:
@@ -479,6 +678,7 @@ class GameState:
                 ant.x += dx
                 ant.y += dy
             ant.refresh_status()
+        self._teleport_ants()
 
     def _update_pheromone(self) -> None:
         self.pheromone = self.pheromone * PHEROMONE_ATTENUATION + (1.0 - PHEROMONE_ATTENUATION) * PHEROMONE_INIT
@@ -498,16 +698,42 @@ class GameState:
             if (x, y) not in visited:
                 self.pheromone[ant.player, x, y] = max(PHEROMONE_FLOOR, self.pheromone[ant.player, x, y] + delta)
                 visited.add((x, y))
+            enemy_base = PLAYER_BASES[1 - ant.player]
             for direction in ant.path:
-                if direction == -1:
+                if direction == -1 or not 0 <= direction < len(OFFSET[y % 2]):
                     continue
                 dx, dy = OFFSET[y % 2][direction]
-                x += dx
-                y += dy
+                next_x = x + dx
+                next_y = y + dy
+                if not is_valid_pos(next_x, next_y):
+                    break
+                if (next_x, next_y) != enemy_base and not is_path(next_x, next_y):
+                    break
+                x = next_x
+                y = next_y
                 if (x, y) in visited:
                     continue
                 self.pheromone[ant.player, x, y] = max(PHEROMONE_FLOOR, self.pheromone[ant.player, x, y] + delta)
                 visited.add((x, y))
+
+    def _sanitize_ant_path(self, ant: Ant) -> None:
+        x, y = PLAYER_BASES[ant.player]
+        enemy_base = PLAYER_BASES[1 - ant.player]
+        for direction in ant.path:
+            if not 0 <= direction < len(OFFSET[y % 2]):
+                ant.path.clear()
+                return
+            dx, dy = OFFSET[y % 2][direction]
+            x += dx
+            y += dy
+            if not is_valid_pos(x, y):
+                ant.path.clear()
+                return
+            if (x, y) != enemy_base and not is_path(x, y):
+                ant.path.clear()
+                return
+        if (x, y) != (ant.x, ant.y):
+            ant.path.clear()
 
     def _resolve_ant_lifecycle(self) -> None:
         remaining: list[Ant] = []
@@ -528,16 +754,45 @@ class GameState:
                 remaining.append(ant)
         self.ants = remaining
 
+    def _draw_spawn_behavior(self) -> AntBehavior:
+        roll = self._random_float()
+        cumulative = 0.0
+        for behavior, probability in SPAWN_BEHAVIOR_WEIGHTS:
+            cumulative += probability
+            if roll <= cumulative:
+                return behavior
+        return SPAWN_BEHAVIOR_WEIGHTS[-1][0]
+
     def _spawn_ants(self) -> None:
         for base in self.bases:
             if base.should_spawn(self.round_index):
-                self.ants.append(base.spawn_ant(self.next_ant_id))
+                ant = base.spawn_ant(self.next_ant_id)
+                ant.set_behavior(self._draw_spawn_behavior())
+                self.ants.append(ant)
                 self.next_ant_id += 1
 
     def _increase_ant_age(self) -> None:
         for ant in self.ants:
             ant.age += 1
+            ant.behavior_turns += 1
+            if ant.behavior == AntBehavior.RANDOM and ant.behavior_turns >= RANDOM_ANT_DECAY_TURNS:
+                ant.set_behavior(AntBehavior.DEFAULT)
+            elif (
+                ant.behavior == AntBehavior.BEWITCHED
+                and ant.bewitch_target_x == ant.x
+                and ant.bewitch_target_y == ant.y
+            ):
+                ant.set_behavior(AntBehavior.DEFAULT)
             ant.refresh_status()
+
+    def _drift_effect(self, effect: WeaponEffect) -> None:
+        if effect.weapon_type not in (SuperWeaponType.LIGHTNING_STORM, SuperWeaponType.EMP_BLASTER):
+            return
+        candidates = [(effect.x, effect.y)]
+        for _, nx, ny in neighbors(effect.x, effect.y):
+            if is_valid_pos(nx, ny):
+                candidates.append((nx, ny))
+        effect.x, effect.y = candidates[self._random_index(len(candidates))]
 
     def _tick_effects(self) -> None:
         for player in range(PLAYER_COUNT):
@@ -546,6 +801,7 @@ class GameState:
                     self.weapon_cooldowns[player, weapon_index] -= 1
         next_effects: list[WeaponEffect] = []
         for effect in self.active_effects:
+            self._drift_effect(effect)
             effect.remaining_turns -= 1
             if effect.remaining_turns > 0 and effect.weapon_type != SuperWeaponType.EMERGENCY_EVASION:
                 next_effects.append(effect)
@@ -638,6 +894,7 @@ class GameState:
             ant.level = level
             ant.age = age
             ant.status = AntStatus(status)
+            self._sanitize_ant_path(ant)
             synced_ants.append(ant)
         self.ants = synced_ants
         if self.towers:

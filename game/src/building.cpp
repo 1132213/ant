@@ -166,7 +166,7 @@ bool DefenseTower::upgrade(TowerType tower_type_) {
         range = 2;
         break;
     case 13:
-        damage = 50;
+        damage = 10;
         spd = 3;
         range = 3;
         break;
@@ -191,7 +191,7 @@ bool DefenseTower::upgrade(TowerType tower_type_) {
         range = 4;
         break;
     case 32:
-        damage = 30;
+        damage = 12;
         spd = 3;
         range = 2;
         break;
