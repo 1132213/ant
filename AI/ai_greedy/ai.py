@@ -24,7 +24,7 @@ try:
 except ModuleNotFoundError as exc:
     if exc.name != "antwar":
         raise
-    from AI.AI_expert.antwar.core import (
+    from AI.ai_greedy.antwar.core import (
         MAX_ROUND,
         MAP_PROPERTY,
         Ant,
@@ -434,12 +434,12 @@ class AI:
 
     def create_session(self):
         try:
-            from runtime import ExpertSession
+            from runtime import GreedySession
         except ModuleNotFoundError as exc:
             if exc.name != "runtime":
                 raise
-            from AI.AI_expert.runtime import ExpertSession
-        return ExpertSession(self)
+            from AI.ai_greedy.runtime import GreedySession
+        return GreedySession(self)
 
     def _mark_super(self, weapon_type: SuperWeaponType) -> None:
         self.last_superweapon_round = self.current_round

@@ -35,7 +35,7 @@ try:
 except ModuleNotFoundError as exc:
     if exc.name != "antwar":
         raise
-    from AI.AI_expert.antwar.core import (
+    from AI.ai_greedy.antwar.core import (
         MAP_SIZE,
         Ant,
         AntState,
@@ -54,7 +54,7 @@ def _to_sdk_operation(operation: Operation) -> SDKOperation:
     return SDKOperation(SDKOperationType(int(operation.type)), int(operation.arg0), int(operation.arg1))
 
 
-def _to_expert_info(state) -> GameInfo:
+def _to_greedy_info(state) -> GameInfo:
     info = GameInfo(state.seed)
     info.round = state.round_index
     info.coins = list(state.coins)
@@ -132,7 +132,7 @@ def _to_expert_info(state) -> GameInfo:
     return info
 
 
-class ExpertSession(MatchSession):
+class GreedySession(MatchSession):
     def __init__(self, agent, io: ProtocolIO | None = None) -> None:
         self.agent = agent
         self.io = io or ProtocolIO()
@@ -144,9 +144,13 @@ class ExpertSession(MatchSession):
         return self.runtime.player
 
     def perform_self_turn(self) -> None:
-        operations = [_to_sdk_operation(operation) for operation in self.agent(self.player, _to_expert_info(self.runtime.state))]
-        self.runtime.apply_self_operations(operations)
-        self.io.send_operations(operations)
+        proposed = [_to_sdk_operation(operation) for operation in self.agent(self.player, _to_greedy_info(self.runtime.state))]
+        accepted: list[SDKOperation] = []
+        for operation in proposed:
+            if self.runtime.state.can_apply_operation(self.player, operation, accepted):
+                accepted.append(operation)
+        self.runtime.apply_self_operations(accepted)
+        self.io.send_operations(accepted)
 
     def receive_opponent_turn(self) -> bool:
         try:
@@ -162,4 +166,3 @@ class ExpertSession(MatchSession):
             return False
         self.runtime.finish_round(round_state)
         return True
-

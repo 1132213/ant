@@ -543,18 +543,26 @@ class GameInfo:
             return
         trail_gain = (0.0, 10.0, -5.0, -3.0)
         delta = trail_gain[int(ant.state)]
-        x, y = BASE_POS[ant.player]
+        x, y = ant.x, ant.y
         seen = [[False for _ in range(MAP_SIZE)] for _ in range(MAP_SIZE)]
-        for step in ant.path:
-            if not seen[x][y]:
-                seen[x][y] = True
-                self.pheromone[ant.player][x][y] += delta
-                if self.pheromone[ant.player][x][y] < PHEROMONE_MIN:
-                    self.pheromone[ant.player][x][y] = PHEROMONE_MIN
-            off_x, off_y = OFFSET[y % 2][step]
+        if 0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE and not seen[x][y]:
+            seen[x][y] = True
+            self.pheromone[ant.player][x][y] += delta
+            if self.pheromone[ant.player][x][y] < PHEROMONE_MIN:
+                self.pheromone[ant.player][x][y] = PHEROMONE_MIN
+        for step in reversed(ant.path):
+            if step == -1:
+                continue
+            if not 0 <= step < 6:
+                break
+            off_x, off_y = OFFSET[y % 2][(step + 3) % 6]
             x += off_x
             y += off_y
-        if not seen[x][y]:
+            if not (0 <= x < MAP_SIZE and 0 <= y < MAP_SIZE):
+                break
+            if seen[x][y]:
+                continue
+            seen[x][y] = True
             self.pheromone[ant.player][x][y] += delta
             if self.pheromone[ant.player][x][y] < PHEROMONE_MIN:
                 self.pheromone[ant.player][x][y] = PHEROMONE_MIN
@@ -590,7 +598,12 @@ class GameInfo:
 
     def is_operation_valid(self, player: int, op: Operation) -> bool:
         if op.type == OperationType.BUILD_TOWER:
-            return is_valid_pos(op.arg0, op.arg1) and is_highland(player, op.arg0, op.arg1) and not self.is_shielded_by_emp(player, op.arg0, op.arg1)
+            return (
+                is_valid_pos(op.arg0, op.arg1)
+                and is_highland(player, op.arg0, op.arg1)
+                and self.building_tag[op.arg0][op.arg1] == BuildingType.EMPTY
+                and not self.is_shielded_by_emp(player, op.arg0, op.arg1)
+            )
         if op.type == OperationType.UPGRADE_TOWER:
             tower = self.tower_of_id(op.arg0)
             return tower is not None and tower.player == player and tower.is_upgrade_type_valid(op.arg1) and not self.tower_under_emp(tower)

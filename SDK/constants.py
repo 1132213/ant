@@ -209,7 +209,7 @@ SPAWN_BEHAVIOR_WEIGHTS = (
     (AntBehavior.CONTROL_FREE, 0.15),
 )
 
-# These anchors are adapted from the curated high-ground order used by the expert bot,
+# These anchors are adapted from the curated high-ground order used by the greedy bot,
 # but exposed with descriptive names rather than opaque slot codes.
 STRATEGIC_BUILD_ORDER = {
     0: (

@@ -25,6 +25,9 @@ def _assert_packaged_layout(package_root: Path) -> None:
     assert (package_root / "common.py").exists()
     assert (package_root / "SDK" / "__init__.py").exists()
     assert (package_root / "tools" / "setup_native.py").exists()
+    assert not list((package_root / "SDK").glob("native_antwar*.so"))
+    assert not list((package_root / "SDK").glob("native_antwar*.dylib"))
+    assert not list((package_root / "SDK").glob("native_antwar*.pyd"))
 
 
 def _run_packaging_script(script_name: str, output_path: Path | None = None) -> Path:
@@ -81,18 +84,18 @@ def test_zip_rand_creates_runnable_layout(tmp_path: Path) -> None:
         sys.path.remove(str(package_root))
 
 
-def test_zip_mcts_and_zip_expert_include_expected_support_files(tmp_path: Path) -> None:
+def test_zip_mcts_and_zip_greedy_include_expected_support_files(tmp_path: Path) -> None:
     mcts_root = tmp_path / "mcts-package"
-    expert_root = tmp_path / "expert-package"
+    greedy_root = tmp_path / "greedy-package"
     assert _run_packaging_script("zip_mcts.sh", mcts_root) == mcts_root
-    assert _run_packaging_script("zip_expert.sh", expert_root) == expert_root
+    assert _run_packaging_script("zip_greedy.sh", greedy_root) == greedy_root
     _assert_packaged_layout(mcts_root)
-    _assert_packaged_layout(expert_root)
+    _assert_packaged_layout(greedy_root)
     assert not (mcts_root / "ai_greedy.py").exists()
-    assert not (mcts_root / "AI" / "AI_expert").exists()
-    assert (expert_root / "runtime.py").exists()
-    assert (expert_root / "antwar" / "core.py").exists()
-    assert not (expert_root / "AI" / "AI_expert").exists()
+    assert not (mcts_root / "AI" / "ai_greedy").exists()
+    assert (greedy_root / "runtime.py").exists()
+    assert (greedy_root / "antwar" / "core.py").exists()
+    assert not (greedy_root / "AI" / "ai_greedy").exists()
 
 
 def test_gitignore_covers_transient_directories() -> None:
@@ -154,7 +157,7 @@ def test_zip_script_accepts_explicit_zip_output_path(tmp_path: Path) -> None:
 
 
 def test_packaged_ais_do_not_require_gymnasium_for_main_import(tmp_path: Path) -> None:
-    for script_name in ("zip_rand.sh", "zip_mcts.sh", "zip_expert.sh"):
+    for script_name in ("zip_rand.sh", "zip_mcts.sh", "zip_greedy.sh"):
         package_root = tmp_path / script_name.replace(".sh", "")
         returned_path = _run_packaging_script(script_name, package_root)
         assert returned_path == package_root

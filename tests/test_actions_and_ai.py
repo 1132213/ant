@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from AI.AI_expert.ai import AI as ExpertAI
-from AI.AI_expert.runtime import _to_expert_info, _to_sdk_operation
+from AI.ai_greedy.antwar.core import Ant as GreedyAnt, AntState as GreedyAntState, GameInfo as GreedyGameInfo
+from AI.ai_greedy.ai import AI as GreedyAI
+from AI.ai_greedy.runtime import _to_greedy_info, _to_sdk_operation
 from AI.ai_mcts import MCTSAgent
 from AI.ai_random import RandomAgent
 from SDK.actions import ActionCatalog
@@ -48,7 +49,7 @@ def test_mcts_module_is_self_contained() -> None:
     assert "greedy_runtime" not in content
 
 
-def test_repo_sources_no_longer_reference_ai_expert_runtime() -> None:
+def test_repo_sources_no_longer_reference_legacy_runtime() -> None:
     targets = [
         Path("SDK/native_antwar.cpp"),
         Path("SDK/native_adapter.py"),
@@ -93,13 +94,19 @@ def test_mcts_agent_returns_legal_choice() -> None:
     assert all(op.op_type in OperationType for op in bundle.operations)
 
 
-def test_expert_ai_smoke_uses_sdk_runtime_view_without_re() -> None:
+def test_greedy_ai_smoke_uses_sdk_runtime_view_without_re() -> None:
     state = GameState.initial(seed=17)
     state.resolve_turn([], [])
-    agent = ExpertAI()
-    operations = agent(0, _to_expert_info(state))
+    agent = GreedyAI()
+    operations = agent(0, _to_greedy_info(state))
     accepted = []
     for operation in operations:
         sdk_operation = _to_sdk_operation(operation)
         assert state.can_apply_operation(0, sdk_operation, accepted)
         accepted.append(sdk_operation)
+
+
+def test_greedy_rollout_pheromone_update_tolerates_teleported_ant_paths() -> None:
+    info = GreedyGameInfo(19)
+    info.ants.append(GreedyAnt(0, 0, 18, 9, 0, 0, 4, GreedyAntState.FAIL, path=[4, -1, 4]))
+    info.update_pheromone(info.ants[0])

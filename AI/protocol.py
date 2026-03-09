@@ -134,10 +134,14 @@ class ProtocolSession(MatchSession):
         return self.controller.player
 
     def perform_self_turn(self) -> None:
-        my_ops = self.controller.decide()
-        self.controller.apply_self_operations(my_ops)
-        self.controller.agent.on_self_operations(my_ops)
-        self.io.send_operations(my_ops)
+        proposed = self.controller.decide()
+        accepted: list[Operation] = []
+        for operation in proposed:
+            if self.controller.state.can_apply_operation(self.player, operation, accepted):
+                accepted.append(operation)
+        self.controller.apply_self_operations(accepted)
+        self.controller.agent.on_self_operations(accepted)
+        self.io.send_operations(accepted)
 
     def receive_opponent_turn(self) -> bool:
         try:

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "usage: $0 <random|mcts|expert> [output_path_or_dir]" >&2
+  echo "usage: $0 <random|mcts|greedy> [output_path_or_dir]" >&2
   exit 1
 fi
 
@@ -19,6 +19,7 @@ clean_tree() {
   find "$root" -name '__pycache__' -type d -prune -exec rm -rf {} +
   find "$root" -name '*.pyc' -delete
   find "$root" -name '.DS_Store' -delete
+  find "$root" \( -name '*.so' -o -name '*.dylib' -o -name '*.pyd' \) -delete
 }
 
 copy_file_mapping() {
@@ -86,13 +87,13 @@ case "$TARGET" in
     ARCHIVE_NAME="ai_mcts.zip"
     FILE_MAPPINGS=("${REPO_ROOT}/AI/ai_mcts.py:ai.py")
     ;;
-  expert)
-    ARCHIVE_NAME="ai_expert.zip"
+  greedy)
+    ARCHIVE_NAME="ai_greedy.zip"
     FILE_MAPPINGS=(
-      "${REPO_ROOT}/AI/AI_expert/ai.py:ai.py"
-      "${REPO_ROOT}/AI/AI_expert/runtime.py:runtime.py"
+      "${REPO_ROOT}/AI/ai_greedy/ai.py:ai.py"
+      "${REPO_ROOT}/AI/ai_greedy/runtime.py:runtime.py"
     )
-    TREE_MAPPINGS=("${REPO_ROOT}/AI/AI_expert/antwar:antwar")
+    TREE_MAPPINGS=("${REPO_ROOT}/AI/ai_greedy/antwar:antwar")
     ;;
   *)
     echo "unknown target: ${TARGET}" >&2

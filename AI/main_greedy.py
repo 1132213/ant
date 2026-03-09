@@ -1,10 +1,10 @@
 try:
-    from AI_expert.ai import AI
+    from ai_greedy.ai import AI
     from main import main
 except ModuleNotFoundError as exc:
-    if exc.name not in {"AI_expert", "main"}:
+    if exc.name not in {"ai_greedy", "main"}:
         raise
-    from AI.AI_expert.ai import AI
+    from AI.ai_greedy.ai import AI
     from AI.main import main
 
 
