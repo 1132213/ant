@@ -146,7 +146,7 @@ void to_judger::config_to_judger(bool if_ai) {
     object = -1;
     json j;
     if (if_ai)
-        j = json{{"state", 0}, {"time", 1}, {"length", 2048}};
+        j = json{{"state", 0}, {"time", 10}, {"length", 2048}};
     else
         j = json{{"state", 0}, {"time", 300}, {"length", 2048}};
     output_info(object, j);

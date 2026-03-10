@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import math
 from pathlib import Path
 import sys
 import time
@@ -26,6 +27,12 @@ from SDK.backend.forecast import (
 
 SEARCH_BUDGET = 0.15
 MAX_NODE_COUNT = 20000
+SEARCH_STAGING_ENEMY_BASE_HP = 50
+EVALUATION_HORIZON = 60
+TOWER_COUNT_SCORE = 1.0
+BASE_ARC_TARGET_DEGREES = (-30.0, 0.0, 30.0)
+BASE_ARC_TOLERANCE_DEGREES = 20.0
+BASE_ARC_MISSING_PENALTY = 8.0
 
 
 def _load_runtime_module():
@@ -191,54 +198,57 @@ class ForecastNode:
         self.collapse_round = 0
         self.danger = False
         self.solvent = True
-        self.distance_trace = [0] * 60
+        self.distance_trace = [0] * EVALUATION_HORIZON
 
     @property
     def action_count(self) -> int:
         return len(self.chosen)
 
-    def evaluate(self) -> float:
-        trial = self.sim.clone()
+    def _record_hostile_distance(self, info: GameInfo) -> None:
+        brain = self.brain
+        trace_idx = info.round - brain.current_round
+        if 0 <= trace_idx < EVALUATION_HORIZON:
+            self.distance_trace[trace_idx] = brain._nearest_hostile_step(info)
+
+    def _advance_trial_until_hp_drop(self, trial: Simulator, hp_drop: int) -> int:
         info = trial.info
         brain = self.brain
+        horizon = brain.current_round + EVALUATION_HORIZON
+        for turn in range(info.round, horizon):
+            if not trial.fast_next_round(brain.side):
+                break
+            self.distance_trace[turn - brain.current_round] = brain._nearest_hostile_step(info)
+            if info.bases[brain.side].hp <= brain.wall_hp_snapshot - hp_drop:
+                return info.round
+        return horizon
 
-        if info.round - brain.current_round < 60:
-            self.distance_trace[info.round - brain.current_round] = brain._nearest_hostile_step(info)
-
-        safe_gap = 0
-        if brain.current_round > 60:
-            safe_gap = brain._cash_safety_gap(info)
-            self.solvent = safe_gap == 0
-
-        ruin_round = brain.current_round + 60
-        already_cracked = False
+    def _forecast_ruin_round(self, trial: Simulator) -> int:
+        info = trial.info
+        brain = self.brain
+        horizon = brain.current_round + EVALUATION_HORIZON
+        ruin_round = horizon
         if info.bases[brain.side].hp <= brain.wall_hp_snapshot - 1:
-            already_cracked = True
             ruin_round = self.collapse_round
-
-        if not already_cracked:
-            self.collapse_round = brain.current_round + 60
-            for turn in range(info.round, brain.current_round + 60):
-                if not trial.fast_next_round(brain.side):
-                    break
-                self.distance_trace[turn - brain.current_round] = brain._nearest_hostile_step(info)
-                if info.bases[brain.side].hp <= brain.wall_hp_snapshot - 1:
-                    self.collapse_round = info.round
-                    if info.bases[brain.side].hp <= brain.wall_hp_snapshot - 2:
-                        ruin_round = self.collapse_round
-                    break
-
+        else:
+            self.collapse_round = self._advance_trial_until_hp_drop(trial, 1)
+            if info.bases[brain.side].hp <= brain.wall_hp_snapshot - 2:
+                ruin_round = self.collapse_round
         if info.bases[brain.side].hp > brain.wall_hp_snapshot - 2:
-            for turn in range(info.round, brain.current_round + 60):
-                if not trial.fast_next_round(brain.side):
-                    break
-                self.distance_trace[turn - brain.current_round] = brain._nearest_hostile_step(info)
-                if info.bases[brain.side].hp <= brain.wall_hp_snapshot - 2:
-                    ruin_round = info.round
-                    break
+            ruin_round = self._advance_trial_until_hp_drop(trial, 2)
+        return ruin_round
 
-        ant_weight = {0: 3.0, 1: 5.0, 2: 7.0}[info.bases[1 - brain.side].ant_level]
-        score = (
+    def _safe_gap(self, info: GameInfo) -> int:
+        brain = self.brain
+        if brain.current_round <= 60:
+            self.solvent = True
+            return 0
+        safe_gap = brain._cash_safety_gap(info)
+        self.solvent = safe_gap == 0
+        return safe_gap
+
+    def _score_survival_window(self, info: GameInfo, ruin_round: int) -> float:
+        brain = self.brain
+        return (
             (info.bases[brain.side].hp - brain.wall_hp_snapshot)
             + (self.collapse_round - brain.current_round) * 0.8
             + (ruin_round - self.collapse_round) * 0.1
@@ -246,74 +256,161 @@ class ForecastNode:
             + 20
         )
 
-        if brain.front_state == 0:
-            score += -(info.old_count[1 - brain.side] - brain.enemy_old_baseline) * ant_weight * 2
-            score += (info.die_count[1 - brain.side] - brain.enemy_die_baseline) * ant_weight * 1.5
+    def _score_frontline_trades(self, info: GameInfo) -> float:
+        brain = self.brain
+        if brain.front_state != 0:
+            return 0.0
+        ant_weight = {0: 3.0, 1: 5.0, 2: 7.0}[info.bases[1 - brain.side].ant_level]
+        return (
+            -(info.old_count[1 - brain.side] - brain.enemy_old_baseline) * ant_weight * 2
+            + (info.die_count[1 - brain.side] - brain.enemy_die_baseline) * ant_weight * 1.5
+        )
 
+    def _score_danger_window(self, ruin_round: int) -> float:
+        brain = self.brain
         self.danger = False
-        if self.collapse_round - brain.current_round <= 16:
-            self.danger = True
-            score -= 500
-            if ruin_round - self.collapse_round <= 8:
-                score -= 300
+        if self.collapse_round - brain.current_round > 16:
+            return 0.0
+        self.danger = True
+        score = -500.0
+        if ruin_round - self.collapse_round <= 8:
+            score -= 300.0
+        return score
 
-        if not self.solvent and not self.danger and brain.front_state >= 0:
-            score += (-40 + safe_gap / 5) * min((brain.current_round - 60) / 30, 1)
+    def _score_cash_safety(self, safe_gap: int) -> float:
+        brain = self.brain
+        if self.solvent or self.danger or brain.front_state < 0:
+            return 0.0
+        return (-40 + safe_gap / 5) * min((brain.current_round - 60) / 30, 1)
 
-        tower_count = info.tower_num_of_player(brain.side)
-        score -= (pow(2, tower_count) - 1) * 15 * 0.2 * 0.75
+    def _my_towers(self, info: GameInfo) -> List[Tower]:
+        return [tower for tower in info.towers if tower.player == self.brain.side]
 
-        tower_positions: List[Tuple[int, int]] = []
-        distanced = False
-        for tower in info.towers:
-            if tower.player != brain.side:
-                continue
-            if int(tower.type) > 0 and int(tower.type) // 10 == 0:
+    def _score_tower_count(self, tower_count: int) -> float:
+        return tower_count * TOWER_COUNT_SCORE
+
+    def _score_tower_investment(self, towers: Sequence[Tower]) -> float:
+        tower_count = len(towers)
+        score = -(pow(2, tower_count) - 1) * 15 * 0.2 * 0.75
+        for tower in towers:
+            if 0 < int(tower.type) and int(tower.type) // 10 == 0:
                 score -= 60 * 0.2 * 0.75
             elif int(tower.type) // 10 > 0:
                 score -= 260 * 0.2 * 0.75
-            tower_positions.append((tower.x, tower.y))
+        return score
 
-        for idx, (x0, y0) in enumerate(tower_positions[:-1]):
-            for x1, y1 in tower_positions[idx + 1 :]:
-                gap = distance(x0, y0, x1, y1)
+    def _score_tower_spacing(self, towers: Sequence[Tower]) -> float:
+        tower_count = len(towers)
+        if tower_count <= 1:
+            return 0.0
+
+        penalty = 0.0
+        distanced = False
+        for idx, tower in enumerate(towers[:-1]):
+            for other in towers[idx + 1 :]:
+                gap = distance(tower.x, tower.y, other.x, other.y)
                 if gap <= 3:
-                    score -= 5
+                    penalty += 5
                 elif gap <= 6:
-                    score -= 2
+                    penalty += 2
                 else:
                     distanced = True
 
         if tower_count >= 3 and not distanced:
+            penalty += 20
+        return -penalty / math.sqrt(tower_count)
+
+    def _score_tower_advancement(self, towers: Sequence[Tower], info: GameInfo) -> float:
+        base = info.bases[self.brain.side]
+        return sum(distance(tower.x, tower.y, base.x, base.y) * 0.4 for tower in towers)
+
+    @staticmethod
+    def _world_pos(x: int, y: int) -> Tuple[float, float]:
+        return x + 0.5 * (y & 1), y * math.sqrt(3) / 2
+
+    @staticmethod
+    def _angle_delta(angle: float, target: float) -> float:
+        return (angle - target + math.pi) % (2 * math.pi) - math.pi
+
+    def _score_base_arc_coverage(self, towers: Sequence[Tower], info: GameInfo) -> float:
+        base = info.bases[self.brain.side]
+        enemy_base = info.bases[1 - self.brain.side]
+        base_x, base_y = self._world_pos(base.x, base.y)
+        enemy_x, enemy_y = self._world_pos(enemy_base.x, enemy_base.y)
+        forward_angle = math.atan2(enemy_y - base_y, enemy_x - base_x)
+        tolerance = math.radians(BASE_ARC_TOLERANCE_DEGREES)
+        covered = {target: False for target in BASE_ARC_TARGET_DEGREES}
+
+        for tower in towers:
+            tower_x, tower_y = self._world_pos(tower.x, tower.y)
+            angle = math.atan2(tower_y - base_y, tower_x - base_x)
+            if abs(self._angle_delta(angle, forward_angle)) > math.pi / 2:
+                continue
+            for target in BASE_ARC_TARGET_DEGREES:
+                target_angle = forward_angle + math.radians(target)
+                if abs(self._angle_delta(angle, target_angle)) <= tolerance:
+                    covered[target] = True
+
+        missing = sum(1 for is_covered in covered.values() if not is_covered)
+        return -missing * BASE_ARC_MISSING_PENALTY
+
+    def _score_hostile_distance_trace(self, info: GameInfo) -> float:
+        brain = self.brain
+        if brain.front_state < 0:
+            return 0.0
+
+        score = 0.0
+        close_flag = False
+        for idx in range(min(EVALUATION_HORIZON, info.round - brain.current_round - 4)):
+            if self.distance_trace[idx] <= 3:
+                close_flag = True
+            if self.distance_trace[idx] == 5:
+                score -= 0.2
+            elif self.distance_trace[idx] == 4:
+                score -= 2.5
+            elif self.distance_trace[idx] in (1, 2, 3):
+                score -= 2
+        if close_flag:
             score -= 20
+        return score
+
+    def _score_enemy_pressure(self, info: GameInfo) -> float:
+        brain = self.brain
+        if brain.front_state < 0 or brain.current_round < 20:
+            return 0.0
 
         base = info.bases[brain.side]
-        for x, y in tower_positions:
-            score += distance(x, y, base.x, base.y) * 0.4
+        enemy_count = 0
+        pressure = 0.0
+        for ant in info.ants:
+            if ant.player != 1 - brain.side:
+                continue
+            pressure += 32 - ant.age - distance(ant.x, ant.y, base.x, base.y) * 1.5
+            enemy_count += 1
+        if enemy_count == 0:
+            return 0.0
+        return pressure / enemy_count * 0.5
 
-        if brain.front_state >= 0:
-            close_flag = False
-            for idx in range(min(60, info.round - brain.current_round - 4)):
-                if self.distance_trace[idx] <= 3:
-                    close_flag = True
-                if self.distance_trace[idx] == 5:
-                    score -= 0.2
-                elif self.distance_trace[idx] == 4:
-                    score -= 2.5
-                elif self.distance_trace[idx] in (1, 2, 3):
-                    score -= 2
-            if close_flag:
-                score -= 20
+    def evaluate(self) -> float:
+        trial = self.sim.clone()
+        info = trial.info
+        self._record_hostile_distance(info)
+        safe_gap = self._safe_gap(info)
+        ruin_round = self._forecast_ruin_round(trial)
+        my_towers = self._my_towers(info)
 
-            enemy_count = 0
-            pressure = 0.0
-            for ant in info.ants:
-                if ant.player != 1 - brain.side:
-                    continue
-                pressure += 32 - ant.age - distance(ant.x, ant.y, base.x, base.y) * 1.5
-                enemy_count += 1
-            if enemy_count > 0 and brain.current_round >= 20:
-                score += pressure / enemy_count * 0.5
+        score = 0.0
+        score += self._score_survival_window(info, ruin_round)
+        score += self._score_frontline_trades(info)
+        score += self._score_danger_window(ruin_round)
+        score += self._score_cash_safety(safe_gap)
+        score += self._score_tower_count(len(my_towers))
+        score += self._score_tower_investment(my_towers)
+        score += self._score_tower_spacing(my_towers)
+        score += self._score_tower_advancement(my_towers, info)
+        score += self._score_base_arc_coverage(my_towers, info)
+        score += self._score_hostile_distance_trace(info)
+        score += self._score_enemy_pressure(info)
 
         self.score = score
         self.best_descendant = score
@@ -326,7 +423,7 @@ class ForecastNode:
             return
 
         if not is_root:
-            if info.round - brain.current_round < 60:
+            if info.round - brain.current_round < EVALUATION_HORIZON:
                 self.distance_trace[info.round - brain.current_round] = brain._nearest_hostile_step(info)
             if not self.sim.fast_next_round(brain.side):
                 return
@@ -389,7 +486,7 @@ class ForecastNode:
             child.score = -1e9
             child.best_descendant = -1e9
             if self.sim.info.round > brain.current_round:
-                trace_len = min(60, self.sim.info.round - brain.current_round)
+                trace_len = min(EVALUATION_HORIZON, self.sim.info.round - brain.current_round)
                 child.distance_trace[:trace_len] = self.distance_trace[:trace_len]
             child.sim.operations[0].clear()
             child.sim.operations[1].clear()
@@ -1238,7 +1335,7 @@ class AI:
 
         start_cpu = time.process_time()
         staging = game_info.clone()
-        staging.bases[enemy].hp = 1000
+        staging.bases[enemy].hp = SEARCH_STAGING_ENEMY_BASE_HP
 
         self.nodes = []
         root = ForecastNode(self, Simulator(staging))
