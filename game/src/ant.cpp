@@ -5,6 +5,21 @@
 // Create an ant.
 
 const int hp_list[3] = {10, 25, 50};
+namespace {
+constexpr int SPECIAL_BEHAVIOR_DECAY_TURNS = 5;
+
+int default_behavior_expiry(Ant::Behavior behavior) {
+    switch (behavior) {
+    case Ant::Behavior::Conservative:
+    case Ant::Behavior::Bewitched:
+    case Ant::Behavior::ControlFree:
+        return SPECIAL_BEHAVIOR_DECAY_TURNS;
+    default:
+        return 0;
+    }
+}
+} // namespace
+
 Ant::Ant(int player, int id, int x, int y, int level)
     : player(player),
       id(id),             // Set player and id (may be generated automatically?)
@@ -25,6 +40,7 @@ Ant::Ant(int player, int id, int x, int y, int level)
       evasion(false),
       behavior(Behavior::Default),
       behavior_rounds(0),
+      behavior_expiry(0),
       target_x(-1),
       target_y(-1),
       has_pending_behavior(false),
@@ -68,12 +84,15 @@ void Ant::increase_age() { age++; }
 
 void Ant::increase_behavior_rounds() { behavior_rounds++; }
 
-void Ant::set_behavior(Behavior new_behavior, bool reset_rounds) {
-    if (is_control_immune() && new_behavior != Behavior::ControlFree)
+void Ant::set_behavior(Behavior new_behavior, bool reset_rounds,
+                       int expiry_rounds, bool force) {
+    if (!force && is_control_immune() && new_behavior != Behavior::ControlFree)
         return;
     behavior = new_behavior;
     if (reset_rounds)
         behavior_rounds = 0;
+    behavior_expiry =
+        expiry_rounds >= 0 ? expiry_rounds : default_behavior_expiry(new_behavior);
     if (behavior != Behavior::Bewitched) {
         target_x = -1;
         target_y = -1;

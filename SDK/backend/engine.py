@@ -49,7 +49,7 @@ from SDK.utils.constants import (
     LEVEL2_TOWER_UPGRADE_COST,
     LEVEL3_TOWER_UPGRADE_COST,
 )
-from SDK.backend.model import NO_MOVE, Ant, Base, Operation, Tower, WeaponEffect
+from SDK.backend.model import NO_MOVE, Ant, Base, Operation, Tower, WeaponEffect, default_behavior_expiry
 from SDK.utils.geometry import hex_distance, is_highland, is_path, is_valid_pos, neighbors
 
 RNG_MASK = (1 << 48) - 1
@@ -675,8 +675,8 @@ class GameState:
         pool = list(eligible)
         while pool and len(chosen) < teleport_count:
             chosen.append(pool.pop(self._random_index(len(pool))))
-        legal_cells = list(PATH_CELLS)
         for ant in chosen:
+            legal_cells = _half_cells(ant.player) if self._ant_in_own_half(ant) else PATH_CELLS
             if not legal_cells:
                 break
             target_x, target_y = legal_cells[self._random_index(len(legal_cells))]
@@ -786,13 +786,18 @@ class GameState:
             ant.age += 1
             ant.behavior_turns += 1
             if ant.behavior == AntBehavior.RANDOM and ant.behavior_turns >= RANDOM_ANT_DECAY_TURNS:
-                ant.set_behavior(AntBehavior.DEFAULT)
-            elif (
-                ant.behavior == AntBehavior.BEWITCHED
-                and ant.bewitch_target_x == ant.x
-                and ant.bewitch_target_y == ant.y
-            ):
-                ant.set_behavior(AntBehavior.DEFAULT)
+                ant.set_behavior(AntBehavior.DEFAULT, force=True)
+            else:
+                if (
+                    ant.behavior == AntBehavior.BEWITCHED
+                    and ant.bewitch_target_x == ant.x
+                    and ant.bewitch_target_y == ant.y
+                ):
+                    ant.set_behavior(AntBehavior.DEFAULT, force=True)
+                elif ant.behavior_expiry > 0:
+                    ant.behavior_expiry -= 1
+                    if ant.behavior not in (AntBehavior.DEFAULT, AntBehavior.RANDOM) and ant.behavior_expiry <= 0:
+                        ant.set_behavior(AntBehavior.DEFAULT, force=True)
             ant.refresh_status()
 
     def _drift_effect(self, effect: WeaponEffect) -> None:
@@ -909,6 +914,7 @@ class GameState:
             if public_behavior is not None:
                 if ant.behavior != public_behavior:
                     ant.behavior_turns = 0
+                    ant.behavior_expiry = default_behavior_expiry(public_behavior)
                 ant.behavior = public_behavior
                 if ant.behavior != AntBehavior.BEWITCHED:
                     ant.bewitch_target_x = -1

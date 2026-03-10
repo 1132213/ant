@@ -199,14 +199,15 @@ DEFAULT_MOVE_TEMPERATURE = 4.0
 BEWITCH_MOVE_TEMPERATURE = 1.5
 CROWDING_PENALTY = 1.25
 RANDOM_ANT_DECAY_TURNS = 5
+SPECIAL_BEHAVIOR_DECAY_TURNS = 5
 ANT_TELEPORT_INTERVAL = 10
 ANT_TELEPORT_RATIO = 0.2
 
 SPAWN_BEHAVIOR_WEIGHTS = (
-    (AntBehavior.DEFAULT, 0.5),
-    (AntBehavior.CONSERVATIVE, 0.2),
-    (AntBehavior.RANDOM, 0.15),
-    (AntBehavior.CONTROL_FREE, 0.15),
+    (AntBehavior.DEFAULT, 0.4),
+    (AntBehavior.CONSERVATIVE, 0.3),
+    (AntBehavior.RANDOM, 0.25),
+    (AntBehavior.CONTROL_FREE, 0.05),
 )
 
 # These anchors are adapted from the curated high-ground order used by the greedy bot,

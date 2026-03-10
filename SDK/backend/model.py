@@ -12,6 +12,7 @@ from SDK.utils.constants import (
     OFFSET,
     OperationType,
     PLAYER_BASES,
+    SPECIAL_BEHAVIOR_DECAY_TURNS,
     SuperWeaponType,
     TOWER_STATS,
     TOWER_UPGRADE_TREE,
@@ -20,6 +21,12 @@ from SDK.utils.constants import (
 from SDK.utils.geometry import hex_distance
 
 NO_MOVE = -1
+
+
+def default_behavior_expiry(behavior: AntBehavior) -> int:
+    if behavior in (AntBehavior.CONSERVATIVE, AntBehavior.BEWITCHED, AntBehavior.CONTROL_FREE):
+        return SPECIAL_BEHAVIOR_DECAY_TURNS
+    return 0
 
 
 @dataclass(slots=True)
@@ -63,6 +70,7 @@ class Ant:
     evasion: bool = False
     behavior: AntBehavior = AntBehavior.DEFAULT
     behavior_turns: int = 0
+    behavior_expiry: int = 0
     bewitch_target_x: int = -1
     bewitch_target_y: int = -1
     pending_behavior: AntBehavior | None = None
@@ -90,6 +98,7 @@ class Ant:
             evasion=self.evasion,
             behavior=self.behavior,
             behavior_turns=self.behavior_turns,
+            behavior_expiry=self.behavior_expiry,
             bewitch_target_x=self.bewitch_target_x,
             bewitch_target_y=self.bewitch_target_y,
             pending_behavior=self.pending_behavior,
@@ -132,13 +141,16 @@ class Ant:
         behavior: AntBehavior,
         *,
         reset_turns: bool = True,
+        force: bool = False,
         target: tuple[int, int] | None = None,
+        expiry_turns: int | None = None,
     ) -> None:
-        if self.control_immune and behavior != AntBehavior.CONTROL_FREE:
+        if not force and self.control_immune and behavior != AntBehavior.CONTROL_FREE:
             return
         self.behavior = behavior
         if reset_turns:
             self.behavior_turns = 0
+        self.behavior_expiry = default_behavior_expiry(behavior) if expiry_turns is None else max(0, expiry_turns)
         if behavior == AntBehavior.BEWITCHED and target is not None:
             self.bewitch_target_x, self.bewitch_target_y = target
         elif behavior != AntBehavior.BEWITCHED:

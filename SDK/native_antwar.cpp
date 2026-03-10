@@ -19,6 +19,18 @@ namespace py = pybind11;
 namespace {
 
 constexpr int INITIAL_COIN = 50;
+constexpr int SPECIAL_BEHAVIOR_DECAY_TURNS = 5;
+
+int default_behavior_expiry(Ant::Behavior behavior) {
+    switch (behavior) {
+    case Ant::Behavior::Conservative:
+    case Ant::Behavior::Bewitched:
+    case Ant::Behavior::ControlFree:
+        return SPECIAL_BEHAVIOR_DECAY_TURNS;
+    default:
+        return 0;
+    }
+}
 
 struct BoundOperation {
     int type;
@@ -387,6 +399,7 @@ struct NativeState {
             if (it != previous_ants.end()) {
                 ant.behavior = it->second.behavior;
                 ant.behavior_rounds = it->second.behavior_rounds;
+                ant.behavior_expiry = it->second.behavior_expiry;
                 ant.target_x = it->second.target_x;
                 ant.target_y = it->second.target_y;
                 ant.has_pending_behavior = it->second.has_pending_behavior;
@@ -395,8 +408,11 @@ struct NativeState {
             if (row.size() >= 9) {
                 const Ant::Behavior public_behavior =
                     static_cast<Ant::Behavior>(row[8]);
-                if (ant.behavior != public_behavior)
+                if (ant.behavior != public_behavior) {
                     ant.behavior_rounds = 0;
+                    ant.behavior_expiry =
+                        default_behavior_expiry(public_behavior);
+                }
                 ant.behavior = public_behavior;
                 if (ant.behavior != Ant::Behavior::Bewitched) {
                     ant.target_x = -1;

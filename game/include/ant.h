@@ -37,6 +37,7 @@ class Ant {
     bool evasion = false;
     Behavior behavior = Behavior::Default;
     int behavior_rounds = 0;
+    int behavior_expiry = 0;
     int target_x = -1;
     int target_y = -1;
     bool has_pending_behavior = false;
@@ -67,7 +68,8 @@ class Ant {
 
     void increase_age();
     void increase_behavior_rounds();
-    void set_behavior(Behavior new_behavior, bool reset_rounds = true);
+    void set_behavior(Behavior new_behavior, bool reset_rounds = true,
+                      int expiry_rounds = -1, bool force = false);
     void set_bewitch_target(int x, int y);
     bool reached_target() const;
     void set_pending_behavior_to(Behavior new_behavior);

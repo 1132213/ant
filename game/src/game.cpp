@@ -30,7 +30,7 @@ constexpr double CROWDING_PENALTY = 1.25;
 constexpr int RANDOM_ANT_DECAY_TURNS = 5;
 constexpr int ANT_TELEPORT_INTERVAL = 10;
 constexpr double ANT_TELEPORT_RATIO = 0.2;
-constexpr double SPAWN_BEHAVIOR_PROBS[4] = {0.5, 0.2, 0.15, 0.15};
+constexpr double SPAWN_BEHAVIOR_PROBS[4] = {0.4, 0.3, 0.25, 0.05};
 constexpr std::size_t MAX_JUDGER_PACKET_SIZE = 16 * 1024 * 1024;
 const int ant_dx[2][6][2] = {
     {{0, 1}, {-1, 0}, {0, -1}, {1, -1}, {1, 0}, {1, 1}},
@@ -311,17 +311,33 @@ void Game::teleport_ants() {
         return;
     int teleport_count =
         std::max(1, static_cast<int>(std::round(eligible.size() * ANT_TELEPORT_RATIO)));
-    std::vector<std::pair<int, int>> cells;
-    for (int x = 0; x < MAP_SIZE; ++x)
-        for (int y = 0; y < MAP_SIZE; ++y)
-            if (ant_can_walk_to(x, y) &&
-                !(x == PLAYER_0_BASE_CAMP_X && y == PLAYER_0_BASE_CAMP_Y) &&
-                !(x == PLAYER_1_BASE_CAMP_X && y == PLAYER_1_BASE_CAMP_Y))
-                cells.emplace_back(x, y);
-    while (!eligible.empty() && teleport_count-- > 0 && !cells.empty()) {
+    while (!eligible.empty() && teleport_count-- > 0) {
         int ant_idx = random_index(static_cast<int>(eligible.size()));
         Ant *ant = eligible[ant_idx];
         eligible.erase(eligible.begin() + ant_idx);
+        std::vector<std::pair<int, int>> cells;
+        Pos own = ant->get_player() ? Pos(PLAYER_1_BASE_CAMP_X, PLAYER_1_BASE_CAMP_Y)
+                                    : Pos(PLAYER_0_BASE_CAMP_X, PLAYER_0_BASE_CAMP_Y);
+        Pos enemy = ant->get_player() ? Pos(PLAYER_0_BASE_CAMP_X, PLAYER_0_BASE_CAMP_Y)
+                                      : Pos(PLAYER_1_BASE_CAMP_X, PLAYER_1_BASE_CAMP_Y);
+        if (ant_in_own_half(*ant)) {
+            for (int x = 0; x < MAP_SIZE; ++x)
+                for (int y = 0; y < MAP_SIZE; ++y)
+                    if (ant_can_walk_to(x, y) &&
+                        !(x == PLAYER_0_BASE_CAMP_X && y == PLAYER_0_BASE_CAMP_Y) &&
+                        !(x == PLAYER_1_BASE_CAMP_X && y == PLAYER_1_BASE_CAMP_Y) &&
+                        distance(Pos(x, y), own) <= distance(Pos(x, y), enemy))
+                        cells.emplace_back(x, y);
+        } else {
+            for (int x = 0; x < MAP_SIZE; ++x)
+                for (int y = 0; y < MAP_SIZE; ++y)
+                    if (ant_can_walk_to(x, y) &&
+                        !(x == PLAYER_0_BASE_CAMP_X && y == PLAYER_0_BASE_CAMP_Y) &&
+                        !(x == PLAYER_1_BASE_CAMP_X && y == PLAYER_1_BASE_CAMP_Y))
+                        cells.emplace_back(x, y);
+        }
+        if (cells.empty())
+            continue;
         auto cell = cells[random_index(static_cast<int>(cells.size()))];
         ant->teleport_to(cell.first, cell.second);
     }
@@ -657,10 +673,19 @@ void Game::increase_ant_age() {
         ant.increase_behavior_rounds();
         if (ant.get_behavior() == Ant::Behavior::Randomized &&
             ant.behavior_rounds >= RANDOM_ANT_DECAY_TURNS) {
-            ant.set_behavior(Ant::Behavior::Default);
-        } else if (ant.get_behavior() == Ant::Behavior::Bewitched &&
-                   ant.reached_target()) {
-            ant.set_behavior(Ant::Behavior::Default);
+            ant.set_behavior(Ant::Behavior::Default, true, -1, true);
+        } else {
+            if (ant.get_behavior() == Ant::Behavior::Bewitched &&
+                ant.reached_target()) {
+                ant.set_behavior(Ant::Behavior::Default, true, -1, true);
+            } else if (ant.behavior_expiry > 0) {
+                ant.behavior_expiry--;
+                if (ant.get_behavior() != Ant::Behavior::Default &&
+                    ant.get_behavior() != Ant::Behavior::Randomized &&
+                    ant.behavior_expiry <= 0) {
+                    ant.set_behavior(Ant::Behavior::Default, true, -1, true);
+                }
+            }
         }
     }
 }

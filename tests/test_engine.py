@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from SDK.utils.constants import LAMBDA_DENOM, LAMBDA_NUM, PHEROMONE_FAIL_BONUS_INT, TAU_BASE_ADD_INT
-from SDK.utils.constants import ANT_TELEPORT_INTERVAL, AntBehavior, AntStatus, OperationType, SuperWeaponType, TowerType
+from SDK.utils.constants import ANT_TELEPORT_INTERVAL, AntBehavior, AntStatus, OperationType, PATH_CELLS, SPECIAL_BEHAVIOR_DECAY_TURNS, SPAWN_BEHAVIOR_WEIGHTS, SuperWeaponType, TowerType
 from SDK.backend.engine import GameState, PublicRoundState
 from SDK.backend.model import Ant, Operation, Tower, WeaponEffect
 
@@ -54,6 +54,36 @@ def test_random_ant_degrades_to_default_after_five_rounds() -> None:
     assert ant.behavior == AntBehavior.DEFAULT
 
 
+def test_conservative_ant_degrades_to_default_after_five_rounds() -> None:
+    ant = Ant(0, 0, 2, 9, hp=10, level=0)
+    ant.set_behavior(AntBehavior.CONSERVATIVE)
+    state = GameState.initial(seed=4)
+    state.ants.append(ant)
+    for _ in range(5):
+        state._increase_ant_age()
+    assert ant.behavior == AntBehavior.DEFAULT
+
+
+def test_control_free_ant_degrades_to_default_after_five_rounds() -> None:
+    ant = Ant(0, 0, 2, 9, hp=10, level=0)
+    ant.set_behavior(AntBehavior.CONTROL_FREE)
+    state = GameState.initial(seed=5)
+    state.ants.append(ant)
+    for _ in range(5):
+        state._increase_ant_age()
+    assert ant.behavior == AntBehavior.DEFAULT
+
+
+def test_bewitched_ant_degrades_to_default_after_five_rounds() -> None:
+    ant = Ant(0, 0, 2, 9, hp=10, level=0)
+    state = GameState.initial(seed=6)
+    state.ants.append(ant)
+    state._control_ant(ant, AntBehavior.BEWITCHED, target=(16, 9))
+    for _ in range(5):
+        state._increase_ant_age()
+    assert ant.behavior == AntBehavior.DEFAULT
+
+
 def test_ice_freeze_promotes_ant_to_random_after_thaw() -> None:
     state = GameState.initial(seed=2)
     ant = Ant(0, 1, 8, 9, hp=25, level=1, behavior=AntBehavior.CONSERVATIVE)
@@ -76,6 +106,38 @@ def test_control_free_ant_ignores_control_and_teleport() -> None:
     state.round_index = ANT_TELEPORT_INTERVAL - 1
     state._teleport_ants()
     assert (immune.x, immune.y) == original
+
+
+def test_teleport_keeps_own_half_ant_in_own_half() -> None:
+    state = GameState.initial(seed=10)
+    ant = Ant(0, 0, 4, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT)
+    state.ants.append(ant)
+    state.round_index = ANT_TELEPORT_INTERVAL - 1
+    state._teleport_ants()
+    assert (ant.x, ant.y) in PATH_CELLS
+    assert state._ant_in_own_half(ant)
+
+
+def test_teleport_can_send_enemy_half_ant_anywhere_on_map() -> None:
+    landed_outside_own_half = False
+    for seed in range(32):
+        state = GameState.initial(seed=seed)
+        ant = Ant(0, 0, 12, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT)
+        state.ants.append(ant)
+        state.round_index = ANT_TELEPORT_INTERVAL - 1
+        state._teleport_ants()
+        if not state._ant_in_own_half(ant):
+            landed_outside_own_half = True
+            break
+    assert landed_outside_own_half
+
+
+def test_spawn_behavior_weights_match_spec() -> None:
+    weights = {behavior: probability for behavior, probability in SPAWN_BEHAVIOR_WEIGHTS}
+    assert weights[AntBehavior.DEFAULT] == 0.4
+    assert weights[AntBehavior.CONSERVATIVE] == 0.3
+    assert weights[AntBehavior.RANDOM] == 0.25
+    assert weights[AntBehavior.CONTROL_FREE] == 0.05
 
 
 def test_lightning_and_emp_effects_drift_each_tick() -> None:
@@ -144,6 +206,7 @@ def test_sync_public_round_state_updates_visible_age_and_syncs_public_behavior()
     assert synced.age == 5
     assert synced.behavior == AntBehavior.CONSERVATIVE
     assert synced.behavior_turns == 0
+    assert synced.behavior_expiry == SPECIAL_BEHAVIOR_DECAY_TURNS
     assert synced.trail_cells == [(2, 9), (3, 9), (4, 9)]
     assert synced.last_move == 1
     assert synced.path_len_total == 3
