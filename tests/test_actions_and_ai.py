@@ -56,6 +56,22 @@ def test_action_catalog_tolerates_stale_ant_trails() -> None:
     assert bundles
 
 
+def test_action_catalog_tolerates_base_upgrade_pairing_without_crashing() -> None:
+    state = GameState.initial(seed=21)
+    state.coins[0] = 300
+    state.bases[0].ant_level = 1
+
+    catalog = ActionCatalog(max_actions=32)
+    bundles = catalog.build(state, 0)
+
+    assert bundles
+    assert any(
+        op.op_type == OperationType.UPGRADE_GENERATED_ANT
+        for bundle in bundles
+        for op in bundle.operations
+    )
+
+
 def test_action_catalog_skips_max_level_base_upgrades() -> None:
     state = GameState.initial(seed=6)
     state.coins[0] = 9999

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
@@ -10,113 +10,106 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from AI.ai_mcts import AI as MCTSAgent
-from SDK.training import AntWarParallelEnv
-
-
-@dataclass(slots=True)
-class EpisodeSummary:
-    seed: int
-    rounds: int
-    winner: int | None
-    reward_player_0: float
-    reward_player_1: float
-
-
-class MCTSSelfPlayScaffold:
-    """Reference self-play loop for the MCTS agent.
-
-    Search behavior still lives in `AI/ai_mcts.py`. If you want to train a
-    learnable policy or value head, the place to add parameter updates is
-    `update_from_episodes()` below.
-    """
-
-    def __init__(self, episodes: int, iterations: int, max_depth: int, seed: int, max_rounds: int) -> None:
-        self.episodes = episodes
-        self.iterations = iterations
-        self.max_depth = max_depth
-        self.seed = seed
-        self.max_rounds = max_rounds
-
-    def build_agent(self, seed: int) -> MCTSAgent:
-        return MCTSAgent(iterations=self.iterations, max_depth=self.max_depth, seed=seed)
-
-    def collect_episode(self, seed: int) -> EpisodeSummary:
-        env = AntWarParallelEnv(seed=seed)
-        try:
-            _, infos = env.reset(seed=seed)
-            agents = [
-                self.build_agent(seed * 2),
-                self.build_agent(seed * 2 + 1),
-            ]
-            total_reward = [0.0, 0.0]
-            rounds = 0
-            while env.agents and rounds < self.max_rounds:
-                actions = {}
-                for player, agent_name in enumerate(env.possible_agents):
-                    bundles = infos[agent_name]["bundles"]
-                    actions[agent_name] = agents[player].choose_action_index(env.state, player, bundles=bundles)
-                _, rewards, terminations, truncations, infos = env.step(actions)
-                total_reward[0] += rewards["player_0"]
-                total_reward[1] += rewards["player_1"]
-                rounds += 1
-                if all(terminations.values()) or all(truncations.values()):
-                    break
-            return EpisodeSummary(
-                seed=seed,
-                rounds=rounds,
-                winner=env.state.winner,
-                reward_player_0=round(total_reward[0], 4),
-                reward_player_1=round(total_reward[1], 4),
-            )
-        finally:
-            env.close()
-
-    def update_from_episodes(self, episodes: list[EpisodeSummary]) -> dict[str, object]:
-        del episodes
-        return {
-            "status": "scaffold-only",
-            "next_step": "Implement your optimizer or distillation update inside update_from_episodes().",
-            "policy_logic": "Keep search and bundle ranking in AI/ai_mcts.py.",
-            "backend_logic": "Do not reimplement rules here; use SDK.backend and SDK.training only.",
-        }
-
-    def run(self) -> dict[str, object]:
-        episodes = [self.collect_episode(self.seed + index) for index in range(self.episodes)]
-        winners = [episode.winner for episode in episodes]
-        return {
-            "episodes": self.episodes,
-            "iterations": self.iterations,
-            "max_depth": self.max_depth,
-            "avg_rounds": sum(episode.rounds for episode in episodes) / max(len(episodes), 1),
-            "player_0_wins": sum(1 for winner in winners if winner == 0),
-            "player_1_wins": sum(1 for winner in winners if winner == 1),
-            "draws": sum(1 for winner in winners if winner is None),
-            "update_hint": self.update_from_episodes(episodes),
-            "samples": [asdict(episode) for episode in episodes[: min(len(episodes), 3)]],
-        }
+from SDK.training import AlphaZeroSelfPlayTrainer, AlphaZeroTrainerConfig, AntWarParallelEnv, TrainingLogger
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the MCTS self-play training scaffold.")
-    parser.add_argument("--episodes", type=int, default=2, help="Number of self-play episodes to collect.")
+    parser = argparse.ArgumentParser(description="Train the model-prior MCTS agent with PettingZoo self-play.")
+    parser.add_argument("--batches", type=int, default=1, help="Number of train/update cycles to run.")
+    parser.add_argument("--episodes", type=int, default=2, help="Self-play episodes collected per update.")
     parser.add_argument("--iterations", type=int, default=24, help="MCTS iterations per decision.")
-    parser.add_argument("--max-depth", type=int, default=3, help="Rollout depth for the reference MCTS agent.")
-    parser.add_argument("--seed", type=int, default=0, help="Base seed for self-play collection.")
-    parser.add_argument("--max-rounds", type=int, default=128, help="Hard cap for each scaffold episode.")
+    parser.add_argument("--max-depth", type=int, default=3, help="Search depth in whole-turn plies.")
+    parser.add_argument("--max-rounds", type=int, default=128, help="Hard cap for each self-play match.")
+    parser.add_argument("--seed", type=int, default=0, help="Base seed for search and environment resets.")
+    parser.add_argument("--max-actions", type=int, default=96, help="Candidate action budget exposed by the env.")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Shared SGD step size for the network.")
+    parser.add_argument("--value-weight", type=float, default=1.0, help="Weight on the value regression loss.")
+    parser.add_argument("--l2-weight", type=float, default=1e-5, help="L2 regularization on policy-value weights.")
+    parser.add_argument("--hidden-dim", type=int, default=128, help="Width of the first hidden layer.")
+    parser.add_argument("--hidden-dim2", type=int, default=64, help="Width of the second hidden layer.")
+    parser.add_argument("--c-puct", type=float, default=1.25, help="Exploration constant used by PUCT.")
+    parser.add_argument("--prior-mix", type=float, default=0.7, help="Blend ratio of learned priors against heuristics.")
+    parser.add_argument("--value-mix", type=float, default=0.7, help="Blend ratio of learned value against heuristics.")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/ai_mcts_latest.npz", help="Path to save the latest checkpoint.")
+    parser.add_argument("--log-dir", type=str, default="logs/train_mcts", help="Base directory for training logs.")
+    parser.add_argument("--run-name", type=str, default=None, help="Optional run name used under the log directory.")
+    parser.add_argument("--resume-from", type=str, default=None, help="Optional checkpoint path used to resume training.")
+    parser.add_argument("--evaluation-episodes", type=int, default=2, help="How many heuristic matches to run after each update.")
+    parser.add_argument(
+        "--prefer-native-backend",
+        action="store_true",
+        help="Prefer the optional native backend for environment resets if it is available.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    scaffold = MCTSSelfPlayScaffold(
+    config = AlphaZeroTrainerConfig(
+        batches=args.batches,
         episodes=args.episodes,
-        iterations=args.iterations,
+        learning_rate=args.learning_rate,
+        value_weight=args.value_weight,
+        l2_weight=args.l2_weight,
+        search_iterations=args.iterations,
         max_depth=args.max_depth,
+        c_puct=args.c_puct,
+        prior_mix=args.prior_mix,
+        value_mix=args.value_mix,
         seed=args.seed,
         max_rounds=args.max_rounds,
+        max_actions=args.max_actions,
+        hidden_dim=args.hidden_dim,
+        hidden_dim2=args.hidden_dim2,
+        checkpoint_path=args.checkpoint,
+        resume_from=args.resume_from,
+        evaluation_episodes=args.evaluation_episodes,
     )
-    print(json.dumps(scaffold.run(), indent=2, sort_keys=True))
+    logger = TrainingLogger(base_dir=args.log_dir, run_name=args.run_name)
+    logger.log_config(
+        {
+            "argv": vars(args),
+            "trainer_config": asdict(config),
+        }
+    )
+    try:
+        trainer = AlphaZeroSelfPlayTrainer(
+            env_factory=lambda seed=0: AntWarParallelEnv(
+                seed=seed,
+                max_actions=args.max_actions,
+                prefer_native_backend=args.prefer_native_backend,
+            ),
+            config=config,
+            logger=logger,
+        )
+        history, samples = trainer.train()
+        latest = history[-1] if history else {}
+        result = {
+            "episodes": args.episodes,
+            "batches": args.batches,
+            "iterations": args.iterations,
+            "max_depth": args.max_depth,
+            "max_rounds": args.max_rounds,
+            "checkpoint": str(Path(args.checkpoint)),
+            "log_dir": str(logger.run_dir),
+            "resume_from": args.resume_from,
+            "training_entrypoint": "SDK/train_mcts.py",
+            "trainer_logic_hook": "AlphaZeroSelfPlayTrainer.update_from_batch()",
+            "agent_logic_file": "AI/ai_mcts.py",
+            "policy_backend": "SDK.alphazero.PolicyValueNet",
+            "search_backend": "SDK.alphazero.PriorGuidedMCTS",
+            "scaffold_compat": "update_from_episodes was replaced by AlphaZeroSelfPlayTrainer.update_from_batch().",
+            "latest_metrics": latest,
+            "history": history,
+            "samples": [asdict(summary) for summary in samples[: min(len(samples), 3)]],
+        }
+        logger.log_summary(result)
+        print(json.dumps(result, indent=2, sort_keys=True))
+    except Exception as exc:
+        logger.log_error(f"training failed: {exc}")
+        raise
+    finally:
+        logger.close()
 
 
 if __name__ == "__main__":

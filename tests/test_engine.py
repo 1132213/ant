@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from SDK.utils.constants import LAMBDA_DENOM, LAMBDA_NUM, PHEROMONE_FAIL_BONUS_INT, TAU_BASE_ADD_INT
-from SDK.utils.constants import ANT_TELEPORT_INTERVAL, AntBehavior, AntKind, AntStatus, OperationType, PATH_CELLS, PLAYER_BASES, SPECIAL_BEHAVIOR_DECAY_TURNS, SPAWN_PROFILE_WEIGHTS, SuperWeaponType, TowerType
+from SDK.utils.constants import ANT_AGE_LIMIT, ANT_TELEPORT_INTERVAL, AntBehavior, AntKind, AntStatus, OperationType, PATH_CELLS, PLAYER_BASES, SPECIAL_BEHAVIOR_DECAY_TURNS, SPAWN_PROFILE_WEIGHTS, SuperWeaponType, TowerType
 from SDK.backend.engine import GameState, PublicRoundState
 from SDK.backend.model import Ant, Operation, Tower, WeaponEffect
 from SDK.utils.geometry import direction_between, hex_distance, is_path, neighbors
@@ -436,7 +436,7 @@ def test_path_len_total_counts_no_move_but_not_teleport() -> None:
 
 def test_too_old_ants_remain_visible_until_next_lifecycle_cleanup() -> None:
     state = GameState.initial(seed=4)
-    ant = Ant(11, 0, 2, 9, hp=10, level=0, age=32)
+    ant = Ant(11, 0, 2, 9, hp=10, level=0, age=ANT_AGE_LIMIT)
     state.ants.append(ant)
     state.advance_round()
     tracked = next(item for item in state.ants if item.ant_id == 11)

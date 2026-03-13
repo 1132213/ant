@@ -42,7 +42,7 @@ class Ant {
     std::vector<Pos> trail_cells;
     int last_move = NoMove;
     int path_len_total = 0;
-    static const int age_limit = 32;
+    static const int age_limit = 48;
     int shield=0;
     bool evasion_control_free_on_break = false;
     bool defend=false;

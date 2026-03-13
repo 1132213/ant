@@ -26,6 +26,7 @@ dist/
 
 # Local runtime artifacts
 replays/
+logs/
 
 # Legacy local files
 _main.py

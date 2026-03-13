@@ -131,7 +131,7 @@ def test_zip_mcts_and_zip_greedy_include_expected_support_files(tmp_path: Path) 
 
 def test_gitignore_covers_transient_directories() -> None:
     content = Path(".gitignore").read_text()
-    for pattern in ("build/", "__pycache__/", ".pytest_cache/"):
+    for pattern in ("build/", "__pycache__/", ".pytest_cache/", "logs/"):
         assert pattern in content
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import subprocess
 import sys
 
@@ -80,3 +82,41 @@ def test_train_mcts_shell_runs_short_scaffold() -> None:
         text=True,
     )
     assert '"episodes": 1' in completed.stdout
+
+
+def test_train_mcts_script_writes_logs(tmp_path: Path) -> None:
+    log_root = tmp_path / "logs"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "SDK/train_mcts.py",
+            "--episodes",
+            "1",
+            "--batches",
+            "1",
+            "--iterations",
+            "2",
+            "--max-depth",
+            "1",
+            "--max-rounds",
+            "2",
+            "--seed",
+            "5",
+            "--evaluation-episodes",
+            "1",
+            "--log-dir",
+            str(log_root),
+            "--run-name",
+            "smoke",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+    run_dir = Path(payload["log_dir"])
+    assert run_dir == log_root / "smoke"
+    assert (run_dir / "config.json").exists()
+    assert (run_dir / "events.jsonl").exists()
+    assert (run_dir / "summary.json").exists()
+    assert (run_dir / "train.log").exists()

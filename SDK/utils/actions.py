@@ -210,7 +210,6 @@ class ActionCatalog:
                     if not trial.can_apply_operation(player, op, accepted):
                         legal = False
                         break
-                    trial.apply_operation(player, op)
                     accepted.append(op)
                 if not legal:
                     continue

@@ -24,6 +24,7 @@ from SDK.backend.forecast import (
     hex_distance as distance,
     is_valid_pos,
 )
+from SDK.utils.constants import ANT_AGE_LIMIT
 
 SEARCH_BUDGET = 0.15
 MAX_NODE_COUNT = 20000
@@ -385,7 +386,7 @@ class ForecastNode:
         for ant in info.ants:
             if ant.player != 1 - brain.side:
                 continue
-            pressure += 32 - ant.age - distance(ant.x, ant.y, base.x, base.y) * 1.5
+            pressure += ANT_AGE_LIMIT - ant.age - distance(ant.x, ant.y, base.x, base.y) * 1.5
             enemy_count += 1
         if enemy_count == 0:
             return 0.0

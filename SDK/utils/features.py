@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
 from SDK.utils.constants import (
+    ANT_AGE_LIMIT,
     ANT_GENERATION_CYCLE,
     ANT_MAX_HP,
     AntBehavior,
@@ -33,6 +35,56 @@ class FeatureExtractor:
     def __init__(self, max_actions: int = MAX_ACTIONS) -> None:
         self.max_actions = max_actions
 
+    @staticmethod
+    def _world_pos(x: int, y: int) -> tuple[float, float]:
+        return x + 0.5 * (y & 1), y * math.sqrt(3) / 2.0
+
+    @staticmethod
+    def _angle_delta(angle: float, target: float) -> float:
+        return (angle - target + math.pi) % (2 * math.pi) - math.pi
+
+    def _base_arc_coverage(self, state: BackendState, player: int) -> float:
+        my_towers = state.towers_of(player)
+        if not my_towers:
+            return 0.0
+        base_x, base_y = PLAYER_BASES[player]
+        enemy_x, enemy_y = PLAYER_BASES[1 - player]
+        world_base_x, world_base_y = self._world_pos(base_x, base_y)
+        world_enemy_x, world_enemy_y = self._world_pos(enemy_x, enemy_y)
+        forward_angle = math.atan2(world_enemy_y - world_base_y, world_enemy_x - world_base_x)
+        target_offsets = (-30.0, 0.0, 30.0)
+        tolerance = math.radians(20.0)
+        covered = {target: False for target in target_offsets}
+        for tower in my_towers:
+            tower_world_x, tower_world_y = self._world_pos(tower.x, tower.y)
+            angle = math.atan2(tower_world_y - world_base_y, tower_world_x - world_base_x)
+            if abs(self._angle_delta(angle, forward_angle)) > math.pi / 2:
+                continue
+            for target in target_offsets:
+                target_angle = forward_angle + math.radians(target)
+                if abs(self._angle_delta(angle, target_angle)) <= tolerance:
+                    covered[target] = True
+        return float(sum(1 for hit in covered.values() if hit) / len(covered))
+
+    def _tower_spacing_score(self, state: BackendState, player: int) -> float:
+        towers = state.towers_of(player)
+        if len(towers) <= 1:
+            return 0.0
+        penalty = 0.0
+        distant_pair = False
+        for index, tower in enumerate(towers[:-1]):
+            for other in towers[index + 1 :]:
+                gap = hex_distance(tower.x, tower.y, other.x, other.y)
+                if gap <= 3:
+                    penalty += 5.0
+                elif gap <= 6:
+                    penalty += 2.0
+                else:
+                    distant_pair = True
+        if len(towers) >= 3 and not distant_pair:
+            penalty += 20.0
+        return float(-penalty / math.sqrt(max(len(towers), 1)))
+
     def summarize(self, state: BackendState, player: int) -> StateFeatures:
         enemy = 1 - player
         my_towers = state.towers_of(player)
@@ -45,11 +97,11 @@ class FeatureExtractor:
         my_front = min((hex_distance(ant.x, ant.y, enemy_base_x, enemy_base_y) for ant in my_ants), default=32)
         enemy_front = min((hex_distance(ant.x, ant.y, my_base_x, my_base_y) for ant in enemy_ants), default=32)
         enemy_progress = np.mean(
-            [32.0 - ant.age - 1.5 * hex_distance(ant.x, ant.y, my_base_x, my_base_y) for ant in enemy_ants],
+            [float(ANT_AGE_LIMIT) - ant.age - 1.5 * hex_distance(ant.x, ant.y, my_base_x, my_base_y) for ant in enemy_ants],
             dtype=np.float32,
         ) if enemy_ants else 0.0
         my_progress = np.mean(
-            [32.0 - ant.age - 1.5 * hex_distance(ant.x, ant.y, enemy_base_x, enemy_base_y) for ant in my_ants],
+            [float(ANT_AGE_LIMIT) - ant.age - 1.5 * hex_distance(ant.x, ant.y, enemy_base_x, enemy_base_y) for ant in my_ants],
             dtype=np.float32,
         ) if my_ants else 0.0
         tower_level_sum = sum(tower.level for tower in my_towers)
@@ -60,6 +112,7 @@ class FeatureExtractor:
         old_delta = float(state.old_count[enemy] - state.old_count[player])
         tower_spread = state.tower_spread_score(player)
         slot_fill_ratio = len(my_towers) / max(len(HIGHLAND_CELLS[player]), 1)
+        hostile_distance = float(state.nearest_ant_distance(player))
         base_cycle = ANT_GENERATION_CYCLE[0]
         best_cycle = min(ANT_GENERATION_CYCLE)
         cycle_span = max(base_cycle - best_cycle, 1e-6)
@@ -68,6 +121,8 @@ class FeatureExtractor:
         best_ant_hp = ANT_MAX_HP[-1]
         ant_hp_span = max(best_ant_hp - base_ant_hp, 1)
         ant_value = (ANT_MAX_HP[state.bases[player].ant_level] - base_ant_hp) / ant_hp_span
+        base_arc_coverage = self._base_arc_coverage(state, player)
+        tower_spacing = self._tower_spacing_score(state, player)
 
         named = {
             "round_ratio": state.round_index / MAX_ROUND,
@@ -89,6 +144,9 @@ class FeatureExtractor:
             "slot_fill_ratio": float(slot_fill_ratio),
             "generation_level": float(generation_value),
             "ant_level": float(ant_value),
+            "hostile_distance": hostile_distance,
+            "base_arc_coverage": float(base_arc_coverage),
+            "tower_spacing": float(tower_spacing),
         }
         values = np.array(list(named.values()), dtype=np.float32)
         return StateFeatures(values=values, named=named)
@@ -120,7 +178,7 @@ class FeatureExtractor:
             channel = 10 if ant.player == player else 11
             board[channel, ant.x, ant.y] += ant.hp / max(ant.max_hp, 1)
             board[12, ant.x, ant.y] += ant.level / 2.0
-            board[13, ant.x, ant.y] += ant.age / 32.0
+            board[13, ant.x, ant.y] += ant.age / float(ANT_AGE_LIMIT)
             if ant.frozen:
                 board[16, ant.x, ant.y] += 1.0
             if ant.behavior == AntBehavior.RANDOM:
@@ -197,6 +255,9 @@ class FeatureExtractor:
         value += summary["tower_level_sum"] * 5.0
         value -= summary["enemy_tower_level_sum"] * 3.0
         value += summary["tower_spread"]
+        value += summary["base_arc_coverage"] * 10.0
+        value += summary["tower_spacing"] * 0.8
+        value += summary["hostile_distance"] * 0.4
         value += summary["generation_level"] * 6.0
         value += summary["ant_level"] * 8.0
         if state.terminal:
