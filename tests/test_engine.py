@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from SDK.utils.constants import LAMBDA_DENOM, LAMBDA_NUM, PHEROMONE_FAIL_BONUS_INT, TAU_BASE_ADD_INT
-from SDK.utils.constants import ANT_AGE_LIMIT, ANT_TELEPORT_INTERVAL, AntBehavior, AntKind, AntStatus, OperationType, PATH_CELLS, PLAYER_BASES, SPECIAL_BEHAVIOR_DECAY_TURNS, SPAWN_PROFILE_WEIGHTS, SuperWeaponType, TowerType
+from SDK.utils.constants import ANT_AGE_LIMIT, ANT_TELEPORT_INTERVAL, BASIC_INCOME, INITIAL_COINS, TOWER_DOWNGRADE_REFUND_RATIO, AntBehavior, AntKind, AntStatus, OperationType, PATH_CELLS, PLAYER_BASES, SPECIAL_BEHAVIOR_DECAY_TURNS, SPAWN_PROFILE_WEIGHTS, SuperWeaponType, TowerType
 from SDK.backend.engine import GameState, PublicRoundState
 from SDK.backend.model import Ant, Operation, Tower, WeaponEffect
 from SDK.utils.geometry import direction_between, hex_distance, is_path, neighbors
@@ -13,7 +13,15 @@ def test_initial_round_spawns_ants_and_advances_time() -> None:
     assert state.round_index == 1
     assert len(state.ants) == 2
     assert all(ant.hp in {20, 30} for ant in state.ants)
-    assert state.coins == [102, 102]
+    assert state.coins == [INITIAL_COINS, INITIAL_COINS]
+
+
+def test_basic_income_pays_three_every_two_rounds() -> None:
+    state = GameState.initial(seed=13)
+    state.resolve_turn([], [])
+    assert state.coins == [INITIAL_COINS, INITIAL_COINS]
+    state.resolve_turn([], [])
+    assert state.coins == [INITIAL_COINS + BASIC_INCOME, INITIAL_COINS + BASIC_INCOME]
 
 
 def test_base_upgrade_curves_match_spec() -> None:
@@ -67,7 +75,7 @@ def test_build_and_upgrade_tower_updates_coin_and_state() -> None:
     build = Operation(OperationType.BUILD_TOWER, 6, 9)
     assert state.can_apply_operation(0, build)
     assert state.apply_operation_list(0, [build]) == []
-    assert state.coins[0] == 85
+    assert state.coins[0] == INITIAL_COINS - 15
     tower = state.tower_at(6, 9)
     assert tower is not None
     upgrade = Operation(OperationType.UPGRADE_TOWER, tower.tower_id, int(TowerType.HEAVY))
@@ -92,6 +100,12 @@ def test_max_level_base_upgrade_returns_zero_income_without_crashing() -> None:
     assert not state.can_apply_operation(0, ant_upgrade)
     assert state.operation_income(0, gen_upgrade) == 0
     assert state.operation_income(0, ant_upgrade) == 0
+
+
+def test_tower_refund_ratio_matches_new_spec() -> None:
+    state = GameState.initial(seed=14)
+    assert state.destroy_tower_income(1) == int(15 * TOWER_DOWNGRADE_REFUND_RATIO)
+    assert state.downgrade_tower_income(TowerType.HEAVY) == int(60 * TOWER_DOWNGRADE_REFUND_RATIO)
 
 
 def test_quick_tower_attacks_enemy_ant() -> None:
@@ -455,7 +469,7 @@ def test_terminal_round_stops_before_spawn_and_income() -> None:
     assert state.terminal is True
     assert state.winner == 0
     assert state.round_index == 1
-    assert state.coins == [110, 100]
+    assert state.coins == [INITIAL_COINS + 10, INITIAL_COINS]
     assert state.ants == []
 
 

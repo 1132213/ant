@@ -16,6 +16,7 @@ from SDK.utils.constants import (
     BASE_UPGRADE_COST,
     BEWITCH_MOVE_TEMPERATURE,
     BASIC_INCOME,
+    BASIC_INCOME_INTERVAL,
     CENTERLINE_WEIGHTS,
     COMBAT_INITIAL_EVASION,
     CROWDING_PENALTY,
@@ -1083,8 +1084,9 @@ class GameState:
             return
         self._spawn_ants()
         self._increase_ant_age()
-        for player in range(PLAYER_COUNT):
-            self.coins[player] += BASIC_INCOME
+        if (self.round_index + 1) % BASIC_INCOME_INTERVAL == 0:
+            for player in range(PLAYER_COUNT):
+                self.coins[player] += BASIC_INCOME
         self._tick_effects()
         self.round_index += 1
         if self.round_index >= MAX_ROUND and not self.terminal:

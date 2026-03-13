@@ -10,6 +10,7 @@ from SDK.utils.constants import (
     ANT_KILL_REWARD,
     ANT_MAX_HP,
     BASIC_INCOME,
+    BASIC_INCOME_INTERVAL,
     BASE_UPGRADE_COST,
     INITIAL_COINS,
     MAP_PROPERTY,
@@ -779,10 +780,11 @@ class Simulator:
             self.info.ants.append(spawned)
             self.info.next_ant_id += 1
 
-        self.info.coins[0] += BASIC_INCOME
-        self.info.coins[1] += BASIC_INCOME
-        if self.info.round % 3 != 0:
-            self.info.coins[enemy] += BASIC_INCOME
+        if (self.info.round + 1) % BASIC_INCOME_INTERVAL == 0:
+            self.info.coins[0] += BASIC_INCOME
+            self.info.coins[1] += BASIC_INCOME
+            if self.info.round % 3 != 0:
+                self.info.coins[enemy] += BASIC_INCOME
 
         self.info.round += 1
         for player in range(2):

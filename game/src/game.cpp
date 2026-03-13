@@ -1085,6 +1085,8 @@ void Game::judge_winner()
 
 void Game::update_coin()
 {
+    if ((round + 1) % 2 != 0)
+        return;
     std::tuple<bool, int> coin0 = player0.coin.basic_income_and_penalty();
     std::tuple<bool, int> coin1 = player1.coin.basic_income_and_penalty();
     if (std::get<0>(coin0))

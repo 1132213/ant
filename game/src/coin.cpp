@@ -2,8 +2,8 @@
 #include <cmath>
 #include <tuple>
 
-constexpr int INITIAL_COIN = 100, INITIAL_TOWER_BUILD_PRICE = 15,
-              INITIAL_BARRACK_BUILD_PRICE = 0, INITIAL_BASIC_INCOME = 2,
+constexpr int INITIAL_COIN = 50, INITIAL_TOWER_BUILD_PRICE = 15,
+              INITIAL_BARRACK_BUILD_PRICE = 0, INITIAL_BASIC_INCOME = 3,
               INITIAL_PENALTY = 0;
 constexpr float TOWER_PRICE_INCREASING_RATIO = 2,
                 BARRACK_PRICE_INCREASING_RATIO = 2;
@@ -40,13 +40,13 @@ void Coin::income_tower_destroy(const int &level) {
     switch (level) {
     case 0: // level 0 -> -1
         tower_building_price /= TOWER_PRICE_INCREASING_RATIO;
-        coin += tower_building_price * 0.8;
+        coin += tower_building_price * 0.9;
         break;
     case 1: // level 1 -> 0
-        coin += LEVEL1_PRICE * 0.8;
+        coin += LEVEL1_PRICE * 0.9;
         break;
     case 2: // level 2 -> 1
-        coin += LEVEL2_PRICE * 0.8;
+        coin += LEVEL2_PRICE * 0.9;
         break;
     }
 }
