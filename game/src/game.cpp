@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <queue>
 #include <tuple>
 using json = nlohmann::json;
 
@@ -28,6 +29,8 @@ constexpr int RANDOM_FLOAT_BITS = 24;
 constexpr double DEFAULT_MOVE_TEMPERATURE = 1.75;
 constexpr double BEWITCH_MOVE_TEMPERATURE = 1.5;
 constexpr double CROWDING_PENALTY = 1.25;
+constexpr double RISK_FIELD_DISTANCE_DECAY = 0.82;
+constexpr double DAMAGE_FIELD_HP_REFERENCE = 25.0;
 constexpr int RANDOM_ANT_DECAY_TURNS = 5;
 constexpr int ANT_TELEPORT_INTERVAL = 10;
 constexpr double ANT_TELEPORT_RATIO = 0.2;
@@ -121,6 +124,131 @@ bool Game::ant_can_target_cell(const Ant &ant, int x, int y) const {
         return true;
     const DefenseTower *tower = enemy_tower_at(ant.get_player(), x, y);
     return tower != nullptr;
+}
+
+void Game::mark_risk_fields_dirty() { risk_fields_dirty = true; }
+
+void Game::refresh_static_risk_fields() {
+    if (!risk_fields_dirty)
+        return;
+    for (int player = 0; player < 2; ++player)
+        for (int x = 0; x < MAP_SIZE; ++x)
+            for (int y = 0; y < MAP_SIZE; ++y) {
+                damage_risk_field[player][x][y] = 0.0;
+                control_risk_field[player][x][y] = 0.0;
+            }
+
+    for (const auto &tower : defensive_towers) {
+        if (tower.destroy() || tower.is_producer())
+            continue;
+        int threatened_player = !tower.get_player();
+        double damage_value =
+            static_cast<double>(tower.get_damage()) / DAMAGE_FIELD_HP_REFERENCE;
+        double control_value = 0.0;
+        switch (tower.get_type()) {
+        case TowerType::Ice:
+            control_value = 1.0;
+            break;
+        case TowerType::Cannon:
+            control_value = 1.3;
+            break;
+        case TowerType::Pulse:
+            control_value = 0.7;
+            break;
+        default:
+            break;
+        }
+        for (int x = 0; x < MAP_SIZE; ++x)
+            for (int y = 0; y < MAP_SIZE; ++y) {
+                if (!ant_can_walk_to(x, y))
+                    continue;
+                if (distance(Pos(x, y), Pos(tower.get_x(), tower.get_y())) >
+                    tower.get_range())
+                    continue;
+                damage_risk_field[threatened_player][x][y] += damage_value;
+                if (control_value > 0.0)
+                    control_risk_field[threatened_player][x][y] += control_value;
+            }
+    }
+    risk_fields_dirty = false;
+}
+
+std::vector<double> Game::directional_field_scores(
+    const Ant &ant, const std::vector<std::tuple<int, int, int>> &candidates,
+    const RiskField &field) const {
+    std::vector<double> scores(candidates.size(),
+                               field[ant.get_player()][ant.get_x()][ant.get_y()]);
+    int owner[MAP_SIZE][MAP_SIZE];
+    int distance_map[MAP_SIZE][MAP_SIZE];
+    for (int x = 0; x < MAP_SIZE; ++x)
+        for (int y = 0; y < MAP_SIZE; ++y) {
+            owner[x][y] = -1;
+            distance_map[x][y] = -1;
+        }
+
+    std::queue<std::pair<int, int>> queue;
+    std::vector<bool> seeded(candidates.size(), false);
+    double current_value = field[ant.get_player()][ant.get_x()][ant.get_y()];
+
+    for (int index = 0; index < static_cast<int>(candidates.size()); ++index) {
+        int nx = std::get<1>(candidates[index]);
+        int ny = std::get<2>(candidates[index]);
+        if (enemy_tower_at(ant.get_player(), nx, ny) != nullptr ||
+            !ant_can_walk_to(nx, ny)) {
+            scores[index] = current_value;
+            continue;
+        }
+        if (owner[nx][ny] != -1)
+            continue;
+        owner[nx][ny] = index;
+        distance_map[nx][ny] = 0;
+        seeded[index] = true;
+        queue.push({nx, ny});
+    }
+
+    while (!queue.empty()) {
+        auto [x, y] = queue.front();
+        queue.pop();
+        int owner_index = owner[x][y];
+        int next_distance = distance_map[x][y] + 1;
+        for (int direction = 0; direction < 6; ++direction) {
+            int nx = x + ant_dx[y % 2][direction][0];
+            int ny = y + ant_dx[y % 2][direction][1];
+            if (!ant_can_walk_to(nx, ny) || owner[nx][ny] != -1)
+                continue;
+            owner[nx][ny] = owner_index;
+            distance_map[nx][ny] = next_distance;
+            queue.push({nx, ny});
+        }
+    }
+
+    std::vector<double> numerators(candidates.size(), 0.0);
+    std::vector<double> denominators(candidates.size(), 0.0);
+    for (int x = 0; x < MAP_SIZE; ++x)
+        for (int y = 0; y < MAP_SIZE; ++y) {
+            if (!ant_can_walk_to(x, y))
+                continue;
+            int owner_index = owner[x][y];
+            if (owner_index < 0)
+                continue;
+            double weight = std::pow(
+                RISK_FIELD_DISTANCE_DECAY,
+                static_cast<double>(distance_map[x][y]));
+            numerators[owner_index] += field[ant.get_player()][x][y] * weight;
+            denominators[owner_index] += weight;
+        }
+
+    for (int index = 0; index < static_cast<int>(candidates.size()); ++index) {
+        if (!seeded[index])
+            continue;
+        int nx = std::get<1>(candidates[index]);
+        int ny = std::get<2>(candidates[index]);
+        if (denominators[index] > 0.0)
+            scores[index] = numerators[index] / denominators[index];
+        else
+            scores[index] = field[ant.get_player()][nx][ny];
+    }
+    return scores;
 }
 
 DefenseTower *Game::enemy_tower_at(int player, int x, int y) {
@@ -346,6 +474,7 @@ void Game::damage_ant_by_tower(DefenseTower &tower, Ant &ant) {
 }
 
 int Game::choose_ant_move(const Ant &ant) {
+    refresh_static_risk_fields();
     Pos target = ant.get_player() ? Pos(PLAYER_0_BASE_CAMP_X, PLAYER_0_BASE_CAMP_Y)
                                   : Pos(PLAYER_1_BASE_CAMP_X, PLAYER_1_BASE_CAMP_Y);
     bool allow_backtrack = ant.get_behavior() == Ant::Behavior::Randomized ||
@@ -372,6 +501,13 @@ int Game::choose_ant_move(const Ant &ant) {
     if (ant.get_behavior() == Ant::Behavior::Randomized)
         return std::get<0>(candidates[random_index(static_cast<int>(candidates.size()))]);
 
+    std::vector<double> damage_scores =
+        directional_field_scores(ant, candidates, damage_risk_field);
+    std::vector<double> control_scores =
+        directional_field_scores(ant, candidates, control_risk_field);
+    if (ant.is_control_immune())
+        std::fill(control_scores.begin(), control_scores.end(), 0.0);
+
     std::vector<double> scores;
     std::vector<double> raw_scores;
     scores.reserve(candidates.size());
@@ -384,6 +520,7 @@ int Game::choose_ant_move(const Ant &ant) {
             const DefenseTower *tower_target = enemy_tower_at(ant.get_player(), nx, ny);
             int eval_x = tower_target ? ant.get_x() : nx;
             int eval_y = tower_target ? ant.get_y() : ny;
+            int index = static_cast<int>(&candidate - &candidates[0]);
             double score =
                 ant.move_weights.progress *
                     move_progress_score(ant, eval_x, eval_y,
@@ -393,9 +530,9 @@ int Game::choose_ant_move(const Ant &ant) {
                 ant.move_weights.crowding *
                     crowding_penalty(ant, eval_x, eval_y) -
                 ant.move_weights.expected_damage *
-                    expected_damage_cost(ant, eval_x, eval_y) -
+                    damage_scores[index] -
                 ant.move_weights.control_risk *
-                    control_risk_cost(ant, eval_x, eval_y) +
+                    control_scores[index] +
                 ant.move_weights.tower_pull *
                     tower_pull_score(ant, eval_x, eval_y, tower_target) +
                 (tower_target ? 4.0 : 0.0);
@@ -409,6 +546,7 @@ int Game::choose_ant_move(const Ant &ant) {
             const DefenseTower *tower_target = enemy_tower_at(ant.get_player(), nx, ny);
             int eval_x = tower_target ? ant.get_x() : nx;
             int eval_y = tower_target ? ant.get_y() : ny;
+            int index = static_cast<int>(&candidate - &candidates[0]);
             double progress = move_progress_score(ant, eval_x, eval_y, target);
             double pheromone = move_pheromone_score(ant, eval_x, eval_y);
             double tower_pull = tower_pull_score(ant, eval_x, eval_y, tower_target);
@@ -418,8 +556,8 @@ int Game::choose_ant_move(const Ant &ant) {
                 ant.move_weights.progress * progress +
                 ant.move_weights.pheromone * pheromone -
                 ant.move_weights.crowding * crowding_penalty(ant, eval_x, eval_y) -
-                ant.move_weights.expected_damage * expected_damage_cost(ant, eval_x, eval_y) -
-                ant.move_weights.control_risk * control_risk_cost(ant, eval_x, eval_y) +
+                ant.move_weights.expected_damage * damage_scores[index] -
+                ant.move_weights.control_risk * control_scores[index] +
                 ant.move_weights.tower_pull * tower_pull);
         }
     }
@@ -460,6 +598,7 @@ void Game::attack_tower_from_ant(Ant &ant, DefenseTower &tower) {
         tower.set_changed_this_round();
         map.destroy(tower.get_x(), tower.get_y());
         tower.set_destroy();
+        mark_risk_fields_dirty();
         ant.set_hp_true(-ant.get_hp());
         return;
     }
@@ -467,6 +606,7 @@ void Game::attack_tower_from_ant(Ant &ant, DefenseTower &tower) {
         tower.set_changed_this_round();
         map.destroy(tower.get_x(), tower.get_y());
         tower.set_destroy();
+        mark_risk_fields_dirty();
     } else {
         tower.set_changed_this_round();
     }
@@ -1228,6 +1368,7 @@ bool Game::apply_operation(const std::vector<Operation> &op_list, int player,
             DefenseTower &new_tower = defensive_towers.back();
             map.build(&new_tower);
             new_tower.set_changed_this_round();
+            mark_risk_fields_dirty();
             // output.add_tower(new_tower, TOWER_BUILD_TYPE);
             tower_id++;
             break;
@@ -1286,6 +1427,7 @@ bool Game::apply_operation(const std::vector<Operation> &op_list, int player,
 
             tower.upgrade(TowerType(op.get_args()));
             tower.set_changed_this_round();
+            mark_risk_fields_dirty();
             // output.add_tower(tower, op.get_args());
             break;
         }
@@ -1322,12 +1464,14 @@ bool Game::apply_operation(const std::vector<Operation> &op_list, int player,
                 output.add_tower(*defensive_tower, TOWER_DESTROY_TYPE,
                                  defensive_tower->get_attack());
                 defensive_tower->set_destroy();
+                mark_risk_fields_dirty();
             }
             else
             {
                 TowerType new_type = defensive_tower->tower_downgrade_type();
                 defensive_tower->downgrade(new_type);
                 defensive_tower->set_changed_this_round();
+                mark_risk_fields_dirty();
                 // output.add_tower(*defensive_tower, new_type);
             }
             used_tower.push_back(id);

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Iterable
@@ -64,6 +65,9 @@ RNG_MASK = (1 << 48) - 1
 RNG_MULTIPLIER = 25214903917
 RNG_INCREMENT = 11
 RANDOM_FLOAT_BITS = 24
+RISK_FIELD_DISTANCE_DECAY = 0.82
+DAMAGE_FIELD_HP_REFERENCE = 25.0
+WALKABLE_CELLS = PATH_CELLS + PLAYER_BASES
 
 
 @lru_cache(maxsize=2)
@@ -99,6 +103,10 @@ def _trail_for_pheromone(ant: Ant) -> list[tuple[int, int]]:
     return trail
 
 
+def _is_ant_walkable_cell(x: int, y: int) -> bool:
+    return (x, y) in PLAYER_BASES or is_path(x, y)
+
+
 @dataclass(slots=True)
 class PublicRoundState:
     round_index: int
@@ -125,6 +133,8 @@ class GameState:
     bases: list[Base] = field(default_factory=list)
     coins: list[int] = field(default_factory=lambda: [INITIAL_COINS, INITIAL_COINS])
     pheromone: np.ndarray = field(default_factory=lambda: np.zeros((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), dtype=np.int32))
+    damage_risk_field: np.ndarray = field(default_factory=lambda: np.zeros((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), dtype=np.float32))
+    control_risk_field: np.ndarray = field(default_factory=lambda: np.zeros((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), dtype=np.float32))
     weapon_cooldowns: np.ndarray = field(default_factory=lambda: np.zeros((PLAYER_COUNT, 5), dtype=np.int16))
     active_effects: list[WeaponEffect] = field(default_factory=list)
     old_count: list[int] = field(default_factory=lambda: [0, 0])
@@ -136,6 +146,7 @@ class GameState:
     terminal: bool = False
     winner: int | None = None
     rng_state: int = 0
+    risk_fields_dirty: bool = True
 
     @classmethod
     def initial(cls, seed: int = 0) -> GameState:
@@ -154,6 +165,8 @@ class GameState:
             bases=[base.clone() for base in self.bases],
             coins=list(self.coins),
             pheromone=self.pheromone.copy(),
+            damage_risk_field=self.damage_risk_field.copy(),
+            control_risk_field=self.control_risk_field.copy(),
             weapon_cooldowns=self.weapon_cooldowns.copy(),
             active_effects=[effect.clone() for effect in self.active_effects],
             old_count=list(self.old_count),
@@ -165,6 +178,7 @@ class GameState:
             terminal=self.terminal,
             winner=self.winner,
             rng_state=self.rng_state,
+            risk_fields_dirty=self.risk_fields_dirty,
         )
 
     def _init_pheromone(self, seed: int) -> None:
@@ -313,32 +327,90 @@ class GameState:
     def _move_pheromone_score(self, ant: Ant, x: int, y: int) -> float:
         return float(self.pheromone[ant.player, x, y]) / 10000.0
 
-    def _damage_field_score(self, ant: Ant, x: int, y: int) -> float:
-        total = 0.0
-        effective_hp = max(ant.hp, 1)
-        for tower in self.towers:
-            if tower.player == ant.player or tower.is_producer:
-                continue
-            if hex_distance(x, y, tower.x, tower.y) <= tower.attack_range:
-                total += tower.damage / effective_hp
-        return total
+    def _mark_risk_fields_dirty(self) -> None:
+        self.risk_fields_dirty = True
 
-    def _control_field_score(self, ant: Ant, x: int, y: int) -> float:
-        if ant.control_immune:
-            return 0.0
-        score = 0.0
+    def _refresh_static_risk_fields(self) -> None:
+        if not self.risk_fields_dirty:
+            return
+        self.damage_risk_field.fill(0.0)
+        self.control_risk_field.fill(0.0)
         for tower in self.towers:
-            if tower.player == ant.player or tower.is_producer:
+            if tower.is_producer:
                 continue
-            if hex_distance(x, y, tower.x, tower.y) > tower.attack_range:
-                continue
+            threatened_player = 1 - tower.player
+            damage_value = tower.damage / DAMAGE_FIELD_HP_REFERENCE
+            control_value = 0.0
             if tower.tower_type == TowerType.ICE:
-                score += 1.0
+                control_value = 1.0
             elif tower.tower_type == TowerType.CANNON:
-                score += 1.3
+                control_value = 1.3
             elif tower.tower_type == TowerType.PULSE:
-                score += 0.7
-        return score
+                control_value = 0.7
+            for x, y in WALKABLE_CELLS:
+                if hex_distance(x, y, tower.x, tower.y) > tower.attack_range:
+                    continue
+                self.damage_risk_field[threatened_player, x, y] += damage_value
+                if control_value > 0.0:
+                    self.control_risk_field[threatened_player, x, y] += control_value
+        self.risk_fields_dirty = False
+
+    def _directional_field_scores(
+        self,
+        ant: Ant,
+        candidates: list[tuple[int, int, int]],
+        field: np.ndarray,
+    ) -> list[float]:
+        self._refresh_static_risk_fields()
+        scores = [0.0] * len(candidates)
+        owner = np.full((MAP_SIZE, MAP_SIZE), -1, dtype=np.int16)
+        distance_map = np.full((MAP_SIZE, MAP_SIZE), -1, dtype=np.int16)
+        queue: deque[tuple[int, int]] = deque()
+        seeded: set[int] = set()
+        current_value = float(field[ant.player, ant.x, ant.y])
+
+        for index, (_, nx, ny) in enumerate(candidates):
+            if self._enemy_tower_at(ant.player, nx, ny) is not None or not _is_ant_walkable_cell(nx, ny):
+                scores[index] = current_value
+                continue
+            if owner[nx, ny] != -1:
+                continue
+            owner[nx, ny] = index
+            distance_map[nx, ny] = 0
+            queue.append((nx, ny))
+            seeded.add(index)
+
+        while queue:
+            x, y = queue.popleft()
+            owner_index = int(owner[x, y])
+            next_distance = int(distance_map[x, y]) + 1
+            for _, nx, ny in neighbors(x, y):
+                if not _is_ant_walkable_cell(nx, ny):
+                    continue
+                if owner[nx, ny] != -1:
+                    continue
+                owner[nx, ny] = owner_index
+                distance_map[nx, ny] = next_distance
+                queue.append((nx, ny))
+
+        numerators = [0.0] * len(candidates)
+        denominators = [0.0] * len(candidates)
+        for x, y in WALKABLE_CELLS:
+            owner_index = int(owner[x, y])
+            if owner_index < 0:
+                continue
+            weight = RISK_FIELD_DISTANCE_DECAY ** int(distance_map[x, y])
+            numerators[owner_index] += float(field[ant.player, x, y]) * weight
+            denominators[owner_index] += weight
+
+        for index, (_, nx, ny) in enumerate(candidates):
+            if index not in seeded:
+                continue
+            if denominators[index] > 0.0:
+                scores[index] = numerators[index] / denominators[index]
+            else:
+                scores[index] = float(field[ant.player, nx, ny])
+        return scores
 
     def _tower_pull_score(self, ant: Ant, x: int, y: int, tower_target: Tower | None = None) -> float:
         if tower_target is not None:
@@ -364,22 +436,22 @@ class GameState:
         *,
         target_x: int,
         target_y: int,
+        damage_cost: float,
+        control_cost: float,
         tower_target: Tower | None = None,
     ) -> tuple[float, float]:
         weights = ant.move_weights
         progress = self._move_progress_score(ant, x, y, target_x, target_y)
         pheromone = self._move_pheromone_score(ant, x, y)
         crowd = self._crowding_penalty(ant, x, y)
-        damage = self._damage_field_score(ant, x, y)
-        control = self._control_field_score(ant, x, y)
         tower_pull = self._tower_pull_score(ant, x, y, tower_target)
         raw = progress + pheromone + tower_pull
         total = (
             weights.progress * progress
             + weights.pheromone * pheromone
             - weights.crowding * crowd
-            - weights.expected_damage * damage
-            - weights.control_risk * control
+            - weights.expected_damage * damage_cost
+            - weights.control_risk * control_cost
             + weights.tower_pull * tower_pull
         )
         return total, raw
@@ -459,6 +531,7 @@ class GameState:
 
     def _remove_tower(self, tower_id: int) -> None:
         self.towers = [tower for tower in self.towers if tower.tower_id != tower_id]
+        self._mark_risk_fields_dirty()
 
     def _ant_in_own_half(self, ant: Ant) -> bool:
         own_base = PLAYER_BASES[ant.player]
@@ -597,11 +670,13 @@ class GameState:
                 )
             )
             self.next_tower_id += 1
+            self._mark_risk_fields_dirty()
             return
         if operation.op_type == OperationType.UPGRADE_TOWER:
             tower = self.tower_by_id(operation.arg0)
             assert tower is not None
             tower.upgrade(TowerType(operation.arg1))
+            self._mark_risk_fields_dirty()
             return
         if operation.op_type == OperationType.DOWNGRADE_TOWER:
             tower = self.tower_by_id(operation.arg0)
@@ -609,6 +684,7 @@ class GameState:
             destroy = tower.downgrade_or_destroy()
             if destroy:
                 self.towers = [item for item in self.towers if item.tower_id != tower.tower_id]
+            self._mark_risk_fields_dirty()
             return
         if operation.op_type in (
             OperationType.USE_LIGHTNING_STORM,
@@ -809,9 +885,14 @@ class GameState:
         if ant.behavior == AntBehavior.RANDOM:
             return candidates[self._random_index(len(candidates))][0]
 
+        damage_scores = self._directional_field_scores(ant, candidates, self.damage_risk_field)
+        control_scores = self._directional_field_scores(ant, candidates, self.control_risk_field)
+        if ant.control_immune:
+            control_scores = [0.0] * len(control_scores)
+
         if ant.behavior == AntBehavior.BEWITCHED and ant.bewitch_target_x >= 0 and ant.bewitch_target_y >= 0:
             scores = []
-            for _, nx, ny in candidates:
+            for index, (_, nx, ny) in enumerate(candidates):
                 tower_target = self._enemy_tower_at(ant.player, nx, ny)
                 eval_x, eval_y = (ant.x, ant.y) if tower_target is not None else (nx, ny)
                 score, _ = self._compose_move_score(
@@ -820,6 +901,8 @@ class GameState:
                     eval_y,
                     target_x=ant.bewitch_target_x,
                     target_y=ant.bewitch_target_y,
+                    damage_cost=damage_scores[index],
+                    control_cost=control_scores[index],
                     tower_target=tower_target,
                 )
                 scores.append(score + (4.0 if tower_target is not None else 0.0))
@@ -827,7 +910,7 @@ class GameState:
 
         weighted_scores: list[float] = []
         raw_scores: list[float] = []
-        for _, nx, ny in candidates:
+        for index, (_, nx, ny) in enumerate(candidates):
             tower_target = self._enemy_tower_at(ant.player, nx, ny)
             eval_x, eval_y = (ant.x, ant.y) if tower_target is not None else (nx, ny)
             score, raw = self._compose_move_score(
@@ -836,6 +919,8 @@ class GameState:
                 eval_y,
                 target_x=target_x,
                 target_y=target_y,
+                damage_cost=damage_scores[index],
+                control_cost=control_scores[index],
                 tower_target=tower_target,
             )
             weighted_scores.append(score)
@@ -1137,6 +1222,7 @@ class GameState:
                 tower.hp = int(public_hp)
             synced_towers.append(tower)
         self.towers = synced_towers
+        self._mark_risk_fields_dirty()
         ant_map = {ant.ant_id: ant for ant in self.ants}
         synced_ants: list[Ant] = []
         for ant_row in public_state.ants:

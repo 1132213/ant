@@ -18,6 +18,7 @@
 
 class Game {
   private:
+    using RiskField = multi_dim_array_t<double, 2, MAP_SIZE, MAP_SIZE>;
     bool is_end;
     int winner;
     int round;
@@ -52,6 +53,9 @@ class Game {
     // Map caches DefenseTower* per cell, so tower storage must keep addresses stable.
     std::deque<DefenseTower> defensive_towers;
     std::vector<Ant> ants;
+    RiskField damage_risk_field{};
+    RiskField control_risk_field{};
+    bool risk_fields_dirty = true;
 
     Output output;
 
@@ -76,6 +80,11 @@ class Game {
     double move_pheromone_score(const Ant &ant, int x, int y) const;
     double expected_damage_cost(const Ant &ant, int x, int y) const;
     double control_risk_cost(const Ant &ant, int x, int y) const;
+    void mark_risk_fields_dirty();
+    void refresh_static_risk_fields();
+    std::vector<double> directional_field_scores(
+        const Ant &ant, const std::vector<std::tuple<int, int, int>> &candidates,
+        const RiskField &field) const;
     double tower_pull_score(const Ant &ant, int x, int y,
                             const DefenseTower *tower_target) const;
     void teleport_ants();

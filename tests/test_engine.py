@@ -214,6 +214,32 @@ def test_move_progress_score_penalizes_stalling_relative_to_advancing() -> None:
     assert advance_score > stall_score
 
 
+def test_directional_damage_field_penalizes_lane_toward_future_tower_fire() -> None:
+    state = GameState.initial(seed=15)
+    ant = Ant(0, 0, 9, 9, hp=10, level=0, behavior=AntBehavior.CONSERVATIVE)
+    state.towers.append(Tower(0, 1, 12, 9, TowerType.BASIC, cooldown_clock=2.0))
+    candidates = state._move_candidates(ant, allow_backtrack=False)
+    east_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == 4)
+    west_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == 1)
+    state._refresh_static_risk_fields()
+    assert state.damage_risk_field[0, 10, 9] == 0.0
+    damage_scores = state._directional_field_scores(ant, candidates, state.damage_risk_field)
+    assert damage_scores[east_index] > damage_scores[west_index]
+
+
+def test_directional_control_field_penalizes_lane_toward_future_control_zone() -> None:
+    state = GameState.initial(seed=16)
+    ant = Ant(0, 0, 9, 9, hp=10, level=0, behavior=AntBehavior.CONSERVATIVE)
+    state.towers.append(Tower(0, 1, 12, 9, TowerType.ICE, cooldown_clock=2.0))
+    candidates = state._move_candidates(ant, allow_backtrack=False)
+    east_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == 4)
+    west_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == 1)
+    state._refresh_static_risk_fields()
+    assert state.control_risk_field[0, 10, 9] == 0.0
+    control_scores = state._directional_field_scores(ant, candidates, state.control_risk_field)
+    assert control_scores[east_index] > control_scores[west_index]
+
+
 def test_default_ant_prefers_advancing_move_on_clear_path() -> None:
     advancing = 0
     for seed in range(16):
