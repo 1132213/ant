@@ -200,9 +200,6 @@ void Output::save_seed(unsigned long long random_seed) {
 }
 void Output::save_data() {
     round_msg["round_state"] = cur;
-    // The live protocol still needs pheromone, but the full replay does not.
-    // Dropping it here keeps long matches from retaining large round snapshots.
-    round_msg["round_state"].erase("pheromone");
     data.push_back(round_msg);
     round_msg.clear();
 }

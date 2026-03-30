@@ -118,4 +118,4 @@ def test_cpp_game_decodes_length_prefixed_ai_operations(tmp_path: Path) -> None:
     )
     assert all("weaponCooldowns" in entry.get("round_state", {}) for entry in replay)
     assert all("activeEffects" in entry.get("round_state", {}) for entry in replay)
-    assert all("pheromone" not in entry.get("round_state", {}) for entry in replay)
+    assert all("pheromone" in entry.get("round_state", {}) for entry in replay)

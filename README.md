@@ -469,8 +469,7 @@ def init_pheromon(M):
 
 - `seed` 只会出现在第 `0` 回合的记录里，用于复现随机过程。
 - `op0` / `op1` 分别是玩家 0 / 玩家 1 该回合的操作列表，字段格式与操作协议一致；未使用的字段通常记为 `-1`。
-- `round_state` 是这一回合写入回放的局面结果。回放文件中会保留 `coins`、`camps`、`speedLv`、`anthpLv`、`weaponCooldowns`、`activeEffects`、`ants`、`towers`、`winner`、`message` 等字段，但不会保留 `pheromone`。
-- 也就是说，消费回放的前端 / SDK / 工具不能假设 `round_state.pheromone` 始终存在；如果需要渲染信息素，应当在字段缺失时自行回退到“空信息素”或使用其他来源补齐。
+- `round_state` 是这一回合写入回放的局面结果。回放文件中会保留 `coins`、`camps`、`speedLv`、`anthpLv`、`weaponCooldowns`、`activeEffects`、`ants`、`towers`、`winner`、`message` 以及 `pheromone` 等字段。
 
 其中：
 
