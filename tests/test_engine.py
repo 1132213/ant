@@ -513,7 +513,7 @@ def test_sync_public_round_state_maps_frozen_status_to_hidden_flag() -> None:
     assert synced.pending_behavior == AntBehavior.RANDOM
 
 
-def test_sync_public_round_state_accepts_optional_tower_hp_and_ant_kind_fields() -> None:
+def test_sync_public_round_state_applies_public_fields() -> None:
     state = GameState.initial(seed=8)
     public_state = PublicRoundState(
         round_index=3,
@@ -521,6 +521,10 @@ def test_sync_public_round_state_accepts_optional_tower_hp_and_ant_kind_fields()
         ants=[(11, 0, 4, 9, 10, 0, 6, int(AntStatus.ALIVE), int(AntBehavior.DEFAULT), int(AntKind.COMBAT))],
         coins=(61, 44),
         camps_hp=(49, 50),
+        speed_lv=(2, 1),
+        anthp_lv=(1, 2),
+        weapon_cooldowns=((9, 8, 7, 6), (1, 2, 3, 4)),
+        active_effects=[(int(SuperWeaponType.EMP_BLASTER), 1, 8, 9, 5)],
     )
     state.sync_public_round_state(public_state)
     assert state.round_index == 3
@@ -528,6 +532,15 @@ def test_sync_public_round_state_accepts_optional_tower_hp_and_ant_kind_fields()
     assert state.towers[0].hp == 7
     assert state.ants[0].ant_id == 11
     assert state.ants[0].kind == AntKind.COMBAT
+    assert state.bases[0].generation_level == 2
+    assert state.bases[1].generation_level == 1
+    assert state.bases[0].ant_level == 1
+    assert state.bases[1].ant_level == 2
+    assert tuple(int(state.weapon_cooldowns[0, weapon_type]) for weapon_type in SuperWeaponType) == (9, 8, 7, 6)
+    assert tuple(int(state.weapon_cooldowns[1, weapon_type]) for weapon_type in SuperWeaponType) == (1, 2, 3, 4)
+    assert len(state.active_effects) == 1
+    assert state.active_effects[0].weapon_type == SuperWeaponType.EMP_BLASTER
+    assert state.active_effects[0].remaining_turns == 5
 
 
 def test_update_pheromone_walks_backwards_from_current_position() -> None:
@@ -706,12 +719,21 @@ def test_medic_support_prefers_combat_ant_in_frontline_two_rows_and_fully_heals(
     assert backline_combat.hp == 2
 
 
-def test_public_round_state_keeps_legacy_tuple_widths() -> None:
+def test_public_round_state_exposes_visible_runtime_fields() -> None:
     state = GameState.initial(seed=9)
     state.towers.append(Tower(0, 0, 6, 9, TowerType.BASIC, cooldown_clock=1.0, hp=7))
     state.ants.append(Ant(30, 0, 2, 9, hp=10, level=0, kind=AntKind.COMBAT))
+    state.bases[0].generation_level = 1
+    state.bases[1].ant_level = 2
+    state.weapon_cooldowns[0, SuperWeaponType.LIGHTNING_STORM] = 12
+    state.weapon_cooldowns[1, SuperWeaponType.EMP_BLASTER] = 5
+    state.active_effects = [WeaponEffect(SuperWeaponType.DEFLECTOR, 0, 6, 9, 4)]
     public_state = state.to_public_round_state()
-    assert len(public_state.towers[0]) == 6
-    assert public_state.towers[0] == (0, 0, 6, 9, int(TowerType.BASIC), 1)
-    assert len(public_state.ants[0]) == 9
-    assert public_state.ants[0][:9] == (30, 0, 2, 9, 10, 0, 0, int(AntStatus.ALIVE), int(AntBehavior.DEFAULT))
+    assert len(public_state.towers[0]) == 7
+    assert public_state.towers[0] == (0, 0, 6, 9, int(TowerType.BASIC), 1, 7)
+    assert len(public_state.ants[0]) == 10
+    assert public_state.ants[0] == (30, 0, 2, 9, 10, 0, 0, int(AntStatus.ALIVE), int(AntBehavior.DEFAULT), int(AntKind.COMBAT))
+    assert public_state.speed_lv == (1, 0)
+    assert public_state.anthp_lv == (0, 2)
+    assert public_state.weapon_cooldowns == ((12, 0, 0, 0), (0, 5, 0, 0))
+    assert public_state.active_effects == [(int(SuperWeaponType.DEFLECTOR), 0, 6, 9, 4)]

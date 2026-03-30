@@ -135,6 +135,10 @@ class PublicRoundState:
     ants: list[tuple[int, ...]]
     coins: tuple[int, int]
     camps_hp: tuple[int, int]
+    speed_lv: tuple[int, int] | None = None
+    anthp_lv: tuple[int, int] | None = None
+    weapon_cooldowns: tuple[tuple[int, ...], ...] | None = None
+    active_effects: list[tuple[int, ...]] | None = None
 
 
 @dataclass(slots=True)
@@ -1248,11 +1252,22 @@ class GameState:
 
     def to_public_round_state(self) -> PublicRoundState:
         towers = [
-            (tower.tower_id, tower.player, tower.x, tower.y, int(tower.tower_type), tower.display_cooldown())
+            (tower.tower_id, tower.player, tower.x, tower.y, int(tower.tower_type), tower.display_cooldown(), tower.hp)
             for tower in sorted(self.towers, key=lambda item: item.tower_id)
         ]
         ants = [
-            (ant.ant_id, ant.player, ant.x, ant.y, ant.hp, ant.level, ant.age, int(ant.status), int(ant.behavior))
+            (
+                ant.ant_id,
+                ant.player,
+                ant.x,
+                ant.y,
+                ant.hp,
+                ant.level,
+                ant.age,
+                int(ant.status),
+                int(ant.behavior),
+                int(ant.kind),
+            )
             for ant in sorted(self.ants, key=lambda item: item.ant_id)
         ]
         return PublicRoundState(
@@ -1261,12 +1276,26 @@ class GameState:
             ants=ants,
             coins=(self.coins[0], self.coins[1]),
             camps_hp=(self.bases[0].hp, self.bases[1].hp),
+            speed_lv=(self.bases[0].generation_level, self.bases[1].generation_level),
+            anthp_lv=(self.bases[0].ant_level, self.bases[1].ant_level),
+            weapon_cooldowns=tuple(
+                tuple(int(self.weapon_cooldowns[player, weapon_type]) for weapon_type in SuperWeaponType)
+                for player in range(PLAYER_COUNT)
+            ),
+            active_effects=[
+                (int(effect.weapon_type), effect.player, effect.x, effect.y, effect.remaining_turns)
+                for effect in sorted(self.active_effects, key=lambda item: (item.player, int(item.weapon_type), item.x, item.y))
+            ],
         )
 
     def sync_public_round_state(self, public_state: PublicRoundState) -> None:
         self.round_index = public_state.round_index
         self.coins[0], self.coins[1] = public_state.coins
         self.bases[0].hp, self.bases[1].hp = public_state.camps_hp
+        if public_state.speed_lv is not None:
+            self.bases[0].generation_level, self.bases[1].generation_level = public_state.speed_lv
+        if public_state.anthp_lv is not None:
+            self.bases[0].ant_level, self.bases[1].ant_level = public_state.anthp_lv
         tower_map = {tower.tower_id: tower for tower in self.towers}
         synced_towers: list[Tower] = []
         for tower_row in public_state.towers:
@@ -1309,6 +1338,23 @@ class GameState:
                 ant.set_kind(AntKind(ant_row[9]))
             synced_ants.append(ant)
         self.ants = synced_ants
+        if public_state.weapon_cooldowns is not None:
+            self.weapon_cooldowns.fill(0)
+            for player, row in enumerate(public_state.weapon_cooldowns[:PLAYER_COUNT]):
+                for weapon_type, cooldown in zip(SuperWeaponType, row):
+                    self.weapon_cooldowns[player, weapon_type] = int(cooldown)
+        if public_state.active_effects is not None:
+            self.active_effects = [
+                WeaponEffect(
+                    SuperWeaponType(effect_row[0]),
+                    int(effect_row[1]),
+                    int(effect_row[2]),
+                    int(effect_row[3]),
+                    int(effect_row[4]),
+                )
+                for effect_row in public_state.active_effects
+                if len(effect_row) >= 5
+            ]
         if self.towers:
             self.next_tower_id = max(tower.tower_id for tower in self.towers) + 1
         else:

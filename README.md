@@ -432,14 +432,25 @@ def init_pheromon(M):
 
 第一行一个整数`R`，表示回合数。
 
-第二行一个整数`N_1`，代表场上总防御塔数量。接下来`N_1`行，每行**6**个整数，分别为`id player x y type cd`，即每个防御塔的ID、归属、坐标、类型、攻击CD。
+第二行一个整数`N_1`，代表场上总防御塔数量。接下来`N_1`行，每行**7**个整数，分别为`id player x y type cd hp`，即每个防御塔的ID、归属、坐标、类型、攻击CD、当前生命。
 
-接下来一个整数`N_2`，代表场上总蚂蚁数量。接下来`N_2`行，每行**9**个整数，分别为`id player x y hp lv age state behavior`，即每只蚂蚁的ID、阵营、坐标、当前生命、等级、当前寿命、当前状态、当前行为。
+接下来一个整数`N_2`，代表场上总蚂蚁数量。接下来`N_2`行，每行**10**个整数，分别为`id player x y hp lv age state behavior kind`，即每只蚂蚁的ID、阵营、坐标、当前生命、等级、当前寿命、当前状态、当前行为、兵种。
 
 - 蚂蚁等级分别为：`0 / 1 / 2`
 - 当前状态 `state`：`0-4 = Alive / Success / Fail / TooOld / Frozen`
 - 当前行为 `behavior`：`0-4 = Default / Conservative / Random / Bewitched / ControlFree`
-- 为兼容旧版 SDK，live 对局协议暂不额外暴露塔 `hp` 与蚂蚁 `kind`；这两个字段会保留在回放 JSON 中。
+- 当前兵种 `kind`：`0-1 = Worker / Combat`
+
+接下来一行**2**个整数：`coin0 coin1`，表示双方当前金币。
+
+接下来一行**6**个整数：`camp0_hp camp1_hp speedLv0 speedLv1 anthpLv0 anthpLv1`。
+
+- `speedLv` 表示基地“生产流水线 / 出兵速度”升级线的内部等级，取值为 `0 / 1 / 2`，分别对应文档中的 `1 / 2 / 3` 级。
+- `anthpLv` 表示基地“高级护甲 / 新生普通蚂蚁最大生命”升级线的内部等级，取值为 `0 / 1 / 2`，分别对应文档中的 `1 / 2 / 3` 级。
+
+接下来一个整数`N_3`，代表超级武器冷却信息的行数。接下来`N_3`行，每行按武器ID `1-4` 的顺序给出一名玩家的冷却：`lightning_cd emp_cd deflector_cd emergency_evasion_cd`。
+
+接下来一个整数`N_4`，代表当前仍在生效的超级武器区域数量。接下来`N_4`行，每行**5**个整数：`type player x y remaining_turns`，表示一个仍在生效的超级武器区域的类型、归属、中心坐标与剩余持续回合数。
 
 #### 回放文件（`replay.json`）说明
 
@@ -458,7 +469,7 @@ def init_pheromon(M):
 
 - `seed` 只会出现在第 `0` 回合的记录里，用于复现随机过程。
 - `op0` / `op1` 分别是玩家 0 / 玩家 1 该回合的操作列表，字段格式与操作协议一致；未使用的字段通常记为 `-1`。
-- `round_state` 是这一回合写入回放的局面结果。回放文件中会保留 `coins`、`camps`、`speedLv`、`anthpLv`、`ants`、`towers`、`winner`、`message` 等字段，但不会保留 `pheromone`。
+- `round_state` 是这一回合写入回放的局面结果。回放文件中会保留 `coins`、`camps`、`speedLv`、`anthpLv`、`weaponCooldowns`、`activeEffects`、`ants`、`towers`、`winner`、`message` 等字段，但不会保留 `pheromone`。
 
 其中：
 

@@ -1868,6 +1868,8 @@ void Game::dump_round_state(/* const std::string &filename */)
     }
     output.add_camps(base_camp0, base_camp1);
     output.add_coins(player0.coin, player1.coin);
+    output.add_weapon_cooldowns(item[0], item[1]);
+    output.add_active_effects(item[0], item[1]);
     output.add_pheromone(map.get_pheromone());
     output.add_winner(winner, "");
     if (!err_msg.empty())
@@ -1907,6 +1909,8 @@ void Game::dump_last_round(
     }
     output.add_camps(base_camp0, base_camp1);
     output.add_coins(player0.coin, player1.coin);
+    output.add_weapon_cooldowns(item[0], item[1]);
+    output.add_active_effects(item[0], item[1]);
     output.add_pheromone(map.get_pheromone());
 
     output.add_winner(winner, msg);
