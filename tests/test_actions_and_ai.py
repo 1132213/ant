@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import AI.ai_greedy as greedy_module
 from AI.ai_greedy import AI as GreedyAI, _to_greedy_info, _to_sdk_operation
 from AI.ai_mcts import MCTSAgent
 from AI.ai_random import RandomAgent
 from SDK.utils.actions import ActionCatalog
 from SDK.backend import load_backend
 from SDK.utils.features import FeatureExtractor
-from SDK.utils.constants import COMBAT_ANT_KILL_REWARD, AntKind, OperationType, TowerType
+from SDK.utils.constants import COMBAT_ANT_KILL_REWARD, AntBehavior, AntKind, AntStatus, OperationType, SuperWeaponType, TowerType
 from SDK.backend.engine import GameState, PublicRoundState
 from SDK.backend.forecast import Ant as ForecastAnt, AntState as ForecastAntState, ForecastSimulator, ForecastState, Operation as ForecastOperation
-from SDK.backend.model import Ant, Operation
+from SDK.backend.model import Ant, Operation, Tower
 
 
 def test_action_catalog_returns_legal_bundles() -> None:
@@ -65,6 +66,21 @@ def test_action_catalog_tolerates_base_upgrade_pairing_without_crashing() -> Non
     bundles = catalog.build(state, 0)
 
     assert bundles
+
+
+def test_action_catalog_can_offer_storm_against_enemy_towers_without_enemy_ants() -> None:
+    state = GameState.initial(seed=24)
+    state.coins[0] = 200
+    state.towers.append(Tower(5, 1, 10, 9, TowerType.PRODUCER, hp=15))
+
+    catalog = ActionCatalog(max_actions=32)
+    bundles = catalog._superweapon_candidates(state, 0)
+
+    assert any(
+        bundle.operations
+        and bundle.operations[0].op_type == OperationType.USE_LIGHTNING_STORM
+        for bundle in bundles
+    )
 
 
 def test_action_catalog_skips_max_level_base_upgrades() -> None:
@@ -219,6 +235,34 @@ def test_native_backend_uses_alternating_tower_build_cost_curve() -> None:
     assert state.coins[0] == 955
 
 
+def test_native_backend_lightning_storm_matches_new_damage_profile() -> None:
+    state = load_backend(prefer_native=True).initial_state(seed=23)
+    state.sync_public_round_state(
+        PublicRoundState(
+            round_index=1,
+            towers=[(7, 1, 11, 9, int(TowerType.PRODUCER), 0, 15)],
+            ants=[
+                (1, 1, 8, 9, 25, 1, 0, int(AntStatus.ALIVE), int(AntBehavior.DEFAULT), int(AntKind.WORKER)),
+                (2, 1, 10, 9, 30, 0, 0, int(AntStatus.ALIVE), int(AntBehavior.DEFAULT), int(AntKind.COMBAT)),
+            ],
+            coins=(50, 50),
+            camps_hp=(50, 50),
+            speed_lv=(0, 0),
+            anthp_lv=(0, 0),
+            weapon_cooldowns=((0, 0, 0, 0), (0, 0, 0, 0)),
+            active_effects=[(int(SuperWeaponType.LIGHTNING_STORM), 0, 9, 9, 16)],
+        )
+    )
+
+    state.advance_round()
+
+    ants = {ant.ant_id: ant for ant in state.ants}
+    assert ants[1].hp == 5
+    assert ants[2].hp == 10
+    tower = next(tower for tower in state.towers if tower.tower_id == 7)
+    assert tower.hp == 12
+
+
 def test_random_runs_on_python_state_without_native_backend() -> None:
     state = GameState.initial(seed=9)
     agent = RandomAgent(seed=9)
@@ -274,6 +318,19 @@ def test_greedy_rollout_pheromone_update_tolerates_teleported_ant_trails() -> No
     assert info.pheromone[0][18][9] < before_target
 
 
+def test_greedy_tower_investment_uses_current_build_curve() -> None:
+    greedy_impl = greedy_module._load_impl("ai")
+    info = ForecastState(41)
+    info.build_tower(0, 0, 6, 9, TowerType.BASIC)
+    info.build_tower(1, 0, 5, 9, TowerType.BASIC)
+    info.build_tower(2, 0, 4, 9, TowerType.BASIC)
+
+    node = greedy_impl.ForecastNode(greedy_impl.AI(), ForecastSimulator(info))
+
+    expected = -sum(ForecastState.build_tower_cost(index) for index in range(3)) * 0.2 * 0.75
+    assert node._score_tower_investment(info.towers) == expected
+
+
 def test_forecast_max_level_base_upgrade_returns_zero_income() -> None:
     info = ForecastState(23)
     info.bases[0].gen_speed_level = 2
@@ -321,3 +378,24 @@ def test_forecast_producer_tower_does_not_crash_attack_loop() -> None:
     enemy_ant = simulator.info.ant_of_id(0)
     assert enemy_ant is not None
     assert enemy_ant.hp == 10
+
+
+def test_forecast_lightning_storm_damages_enemy_combat_ants_without_instant_kill() -> None:
+    info = ForecastState(31)
+    info.ants.extend(
+        [
+            ForecastAnt(0, 1, 9, 9, 25, 1, 0, ForecastAntState.ALIVE),
+            ForecastAnt(1, 1, 10, 9, 30, 0, 0, ForecastAntState.ALIVE, kind=AntKind.COMBAT),
+        ]
+    )
+    info.use_super_weapon(SuperWeaponType.LIGHTNING_STORM, 0, 9, 9)
+
+    simulator = ForecastSimulator(info)
+
+    assert simulator.fast_next_round(0)
+    worker = simulator.info.ant_of_id(0)
+    combat = simulator.info.ant_of_id(1)
+    assert worker is not None
+    assert combat is not None
+    assert worker.hp == 5
+    assert combat.hp == 10

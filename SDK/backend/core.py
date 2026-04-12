@@ -3,21 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from SDK.backend.engine import DEFAULT_MOVEMENT_POLICY
 from SDK.backend.state import BackendState, PythonBackendState
 
 
 class EngineBackend(Protocol):
     name: str
 
-    def initial_state(self, seed: int = 0) -> BackendState: ...
+    def initial_state(self, seed: int = 0, movement_policy: str = DEFAULT_MOVEMENT_POLICY) -> BackendState: ...
 
 
 @dataclass(slots=True)
 class PythonBackend:
     name: str = "python"
 
-    def initial_state(self, seed: int = 0) -> BackendState:
-        return PythonBackendState.initial(seed=seed)
+    def initial_state(self, seed: int = 0, movement_policy: str = DEFAULT_MOVEMENT_POLICY) -> BackendState:
+        return PythonBackendState.initial(seed=seed, movement_policy=movement_policy)
 
 
 class NativeBackendUnavailable(RuntimeError):
@@ -29,10 +30,10 @@ class NativeBackend:
     module: object
     name: str = "native"
 
-    def initial_state(self, seed: int = 0) -> BackendState:
+    def initial_state(self, seed: int = 0, movement_policy: str = DEFAULT_MOVEMENT_POLICY) -> BackendState:
         from SDK.native_adapter import NativeGameStateAdapter
 
-        return NativeGameStateAdapter.initial(seed)
+        return NativeGameStateAdapter.initial(seed, movement_policy=movement_policy)
 
 
 def load_backend(prefer_native: bool = False) -> EngineBackend:

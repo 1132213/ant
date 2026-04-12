@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from functools import lru_cache
+from heapq import heappop, heappush
 from typing import Iterable
 
 import numpy as np
@@ -58,6 +59,9 @@ from SDK.utils.constants import (
     AntStatus,
     LEVEL2_TOWER_UPGRADE_COST,
     LEVEL3_TOWER_UPGRADE_COST,
+    LIGHTNING_STORM_ANT_DAMAGE,
+    LIGHTNING_STORM_TOWER_DAMAGE,
+    LIGHTNING_STORM_TOWER_INTERVAL,
     tower_build_cost_for_count,
 )
 from SDK.backend.model import NO_MOVE, Ant, Base, Operation, Tower, WeaponEffect, default_behavior_expiry
@@ -73,6 +77,24 @@ COMBAT_SELF_DESTRUCT_PULL_BONUS = 3.0
 COMBAT_TOWER_TARGET_BONUS = 8.0
 COMBAT_TOWER_APPROACH_PULL_BASE = 8.0
 WORKER_TOWER_TARGET_BONUS = 2.75
+MOVEMENT_POLICY_LEGACY = "legacy"
+MOVEMENT_POLICY_ENHANCED = "enhanced"
+DEFAULT_MOVEMENT_POLICY = MOVEMENT_POLICY_ENHANCED
+WORKER_PATH_DAMAGE_WEIGHT = 0.20
+WORKER_PATH_CONTROL_WEIGHT = 1.80
+WORKER_PATH_TRAFFIC_WEIGHT = 0.75
+WORKER_RESERVATION_WEIGHT = 1.40
+WORKER_TOWER_CLAIM_WEIGHT = 1.00
+WORKER_BLOCKED_ATTACK_BONUS = 6.00
+WORKER_ROUTE_IMPROVEMENT_EPS = 0.50
+COMBAT_PATH_DAMAGE_WEIGHT = 0.08
+COMBAT_PATH_CONTROL_WEIGHT = 0.45
+COMBAT_PATH_TRAFFIC_WEIGHT = 0.25
+COMBAT_RESERVATION_WEIGHT = 0.45
+COMBAT_TOWER_CLAIM_WEIGHT = 0.85
+COMBAT_TRAVEL_COST_WEIGHT = 0.90
+ATTACK_FINISH_BONUS = 3.00
+SURPLUS_HP_VALUE_WEIGHT = 0.15
 
 
 @lru_cache(maxsize=2)
@@ -149,8 +171,21 @@ class TurnResolution:
 
 
 @dataclass(slots=True)
+class EnhancedTowerPlan:
+    total_cost: np.ndarray
+    damage_cost: np.ndarray
+
+
+@dataclass(slots=True)
+class EnhancedMoveAnnotation:
+    next_cell: tuple[int, int] | None = None
+    tower_id: int | None = None
+
+
+@dataclass(slots=True)
 class GameState:
     seed: int = 0
+    movement_policy: str = DEFAULT_MOVEMENT_POLICY
     round_index: int = 0
     towers: list[Tower] = field(default_factory=list)
     ants: list[Ant] = field(default_factory=list)
@@ -171,10 +206,27 @@ class GameState:
     winner: int | None = None
     rng_state: int = 0
     risk_fields_dirty: bool = True
+    enhanced_move_phase_active: bool = False
+    enhanced_move_cache_dirty: bool = True
+    enhanced_worker_costs: np.ndarray = field(
+        default_factory=lambda: np.full((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), np.inf, dtype=np.float32)
+    )
+    enhanced_combat_base_costs: np.ndarray = field(
+        default_factory=lambda: np.full((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), np.inf, dtype=np.float32)
+    )
+    enhanced_traffic_field: np.ndarray = field(
+        default_factory=lambda: np.zeros((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), dtype=np.float32)
+    )
+    enhanced_reservations: np.ndarray = field(
+        default_factory=lambda: np.zeros((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), dtype=np.float32)
+    )
+    enhanced_tower_plans: list[dict[int, EnhancedTowerPlan]] = field(default_factory=lambda: [dict(), dict()])
+    enhanced_tower_claims: list[dict[int, int]] = field(default_factory=lambda: [dict(), dict()])
+    enhanced_move_annotations: dict[int, EnhancedMoveAnnotation] = field(default_factory=dict)
 
     @classmethod
-    def initial(cls, seed: int = 0) -> GameState:
-        state = cls(seed=seed)
+    def initial(cls, seed: int = 0, movement_policy: str = DEFAULT_MOVEMENT_POLICY) -> GameState:
+        state = cls(seed=seed, movement_policy=movement_policy)
         state.bases = [Base(0, *PLAYER_BASES[0], hp=BASE_HP), Base(1, *PLAYER_BASES[1], hp=BASE_HP)]
         state._init_pheromone(seed)
         state.rng_state = (seed ^ RNG_MULTIPLIER) & RNG_MASK
@@ -183,6 +235,7 @@ class GameState:
     def clone(self) -> GameState:
         return GameState(
             seed=self.seed,
+            movement_policy=self.movement_policy,
             round_index=self.round_index,
             towers=[tower.clone() for tower in self.towers],
             ants=[ant.clone() for ant in self.ants],
@@ -203,6 +256,8 @@ class GameState:
             winner=self.winner,
             rng_state=self.rng_state,
             risk_fields_dirty=self.risk_fields_dirty,
+            enhanced_move_phase_active=False,
+            enhanced_move_cache_dirty=True,
         )
 
     def _init_pheromone(self, seed: int) -> None:
@@ -300,13 +355,15 @@ class GameState:
 
     def safe_coin_threshold(self, player: int) -> int:
         enemy = 1 - player
+        emp_stats = SUPER_WEAPON_STATS[SuperWeaponType.EMP_BLASTER]
         emp_cd = int(self.weapon_cooldowns[enemy, SuperWeaponType.EMP_BLASTER])
         enemy_coin = int(self.coins[enemy])
-        if emp_cd >= 90:
+        capped_cost = max(emp_stats.cost - 1, 0)
+        if emp_cd >= emp_stats.cooldown - 10:
             return 0
         if emp_cd > 0:
-            return max(int(min(enemy_coin, 149) - emp_cd * 1.66), 0)
-        return min(enemy_coin, 149)
+            return max(int(min(enemy_coin, capped_cost) - emp_cd * 1.66), 0)
+        return min(enemy_coin, capped_cost)
 
     def current_and_neighbors_empty(self, x: int, y: int) -> bool:
         if (x, y) in PLAYER_BASES:
@@ -359,6 +416,7 @@ class GameState:
 
     def _mark_risk_fields_dirty(self) -> None:
         self.risk_fields_dirty = True
+        self._invalidate_enhanced_move_cache()
 
     def _refresh_static_risk_fields(self) -> None:
         if not self.risk_fields_dirty:
@@ -384,6 +442,174 @@ class GameState:
                 if control_value > 0.0:
                     self.control_risk_field[threatened_player, x, y] += control_value
         self.risk_fields_dirty = False
+
+    def _invalidate_enhanced_move_cache(self) -> None:
+        self.enhanced_move_cache_dirty = True
+        if not self.enhanced_move_phase_active:
+            self.enhanced_move_annotations.clear()
+
+    def _begin_move_phase(self) -> None:
+        if self.movement_policy != MOVEMENT_POLICY_ENHANCED:
+            return
+        self.enhanced_move_phase_active = True
+        self._prepare_enhanced_move_cache(reset_reservations=True)
+
+    def _end_move_phase(self) -> None:
+        if self.movement_policy != MOVEMENT_POLICY_ENHANCED:
+            return
+        self.enhanced_move_phase_active = False
+        self.enhanced_move_annotations.clear()
+        self._invalidate_enhanced_move_cache()
+
+    def _cell_damage_hp(self, player: int, x: int, y: int) -> float:
+        return float(self.damage_risk_field[player, x, y]) * DAMAGE_FIELD_HP_REFERENCE
+
+    def _compute_enhanced_traffic_field(self) -> np.ndarray:
+        field = np.zeros((PLAYER_COUNT, MAP_SIZE, MAP_SIZE), dtype=np.float32)
+        for ant in self.ants:
+            if not ant.is_alive():
+                continue
+            field[ant.player, ant.x, ant.y] += 1.0
+            for _, nx, ny in neighbors(ant.x, ant.y):
+                if _is_ant_walkable_cell(nx, ny):
+                    field[ant.player, nx, ny] += 0.35
+        return field
+
+    def _reverse_weighted_plan(
+        self,
+        player: int,
+        sources: list[tuple[int, int]],
+        *,
+        damage_weight: float,
+        control_weight: float,
+        traffic_weight: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        total = np.full((MAP_SIZE, MAP_SIZE), np.inf, dtype=np.float32)
+        damage = np.full((MAP_SIZE, MAP_SIZE), np.inf, dtype=np.float32)
+        heap: list[tuple[float, float, int, int]] = []
+        for x, y in sources:
+            if not _is_ant_walkable_cell(x, y):
+                continue
+            if float(total[x, y]) <= 0.0:
+                continue
+            total[x, y] = 0.0
+            damage[x, y] = 0.0
+            heappush(heap, (0.0, 0.0, x, y))
+
+        while heap:
+            current_total, current_damage, x, y = heappop(heap)
+            best_total = float(total[x, y])
+            best_damage = float(damage[x, y])
+            if current_total > best_total + 1e-6:
+                continue
+            if abs(current_total - best_total) <= 1e-6 and current_damage > best_damage + 1e-6:
+                continue
+
+            step_damage = self._cell_damage_hp(player, x, y)
+            step_control = float(self.control_risk_field[player, x, y])
+            step_traffic = float(self.enhanced_traffic_field[player, x, y])
+            step_total = 1.0 + damage_weight * step_damage + control_weight * step_control + traffic_weight * step_traffic
+
+            for _, px, py in neighbors(x, y):
+                if not _is_ant_walkable_cell(px, py):
+                    continue
+                next_total = current_total + step_total
+                next_damage = current_damage + step_damage
+                known_total = float(total[px, py])
+                known_damage = float(damage[px, py])
+                if next_total + 1e-6 < known_total or (
+                    abs(next_total - known_total) <= 1e-6 and next_damage + 1e-6 < known_damage
+                ):
+                    total[px, py] = next_total
+                    damage[px, py] = next_damage
+                    heappush(heap, (next_total, next_damage, px, py))
+        return total, damage
+
+    def _prepare_enhanced_move_cache(self, *, reset_reservations: bool) -> None:
+        self._refresh_static_risk_fields()
+        self.enhanced_traffic_field = self._compute_enhanced_traffic_field()
+
+        for player in range(PLAYER_COUNT):
+            worker_total, _ = self._reverse_weighted_plan(
+                player,
+                [PLAYER_BASES[1 - player]],
+                damage_weight=WORKER_PATH_DAMAGE_WEIGHT,
+                control_weight=WORKER_PATH_CONTROL_WEIGHT,
+                traffic_weight=WORKER_PATH_TRAFFIC_WEIGHT,
+            )
+            combat_total, _ = self._reverse_weighted_plan(
+                player,
+                [PLAYER_BASES[1 - player]],
+                damage_weight=COMBAT_PATH_DAMAGE_WEIGHT,
+                control_weight=COMBAT_PATH_CONTROL_WEIGHT,
+                traffic_weight=COMBAT_PATH_TRAFFIC_WEIGHT,
+            )
+            self.enhanced_worker_costs[player] = worker_total
+            self.enhanced_combat_base_costs[player] = combat_total
+
+            plans: dict[int, EnhancedTowerPlan] = {}
+            for tower in self.towers:
+                if tower.player == player:
+                    continue
+                sources = [(nx, ny) for _, nx, ny in neighbors(tower.x, tower.y) if _is_ant_walkable_cell(nx, ny)]
+                if not sources:
+                    continue
+                total_cost, damage_cost = self._reverse_weighted_plan(
+                    player,
+                    sources,
+                    damage_weight=COMBAT_PATH_DAMAGE_WEIGHT,
+                    control_weight=COMBAT_PATH_CONTROL_WEIGHT,
+                    traffic_weight=COMBAT_PATH_TRAFFIC_WEIGHT,
+                )
+                plans[tower.tower_id] = EnhancedTowerPlan(total_cost=total_cost, damage_cost=damage_cost)
+            self.enhanced_tower_plans[player] = plans
+
+        if reset_reservations:
+            self.enhanced_reservations.fill(0.0)
+            self.enhanced_tower_claims = [dict(), dict()]
+        self.enhanced_move_annotations.clear()
+        self.enhanced_move_cache_dirty = False
+
+    def _ensure_enhanced_move_cache(self) -> None:
+        if self.movement_policy != MOVEMENT_POLICY_ENHANCED:
+            return
+        if self.enhanced_move_phase_active:
+            if self.enhanced_move_cache_dirty:
+                self._prepare_enhanced_move_cache(reset_reservations=False)
+            return
+        self._prepare_enhanced_move_cache(reset_reservations=True)
+
+    def _tower_attack_value(self, ant: Ant, tower: Tower, arrival_hp: float) -> float:
+        if arrival_hp <= 0:
+            return -1e9
+        if ant.kind == AntKind.COMBAT and arrival_hp * 2 < ant.max_hp:
+            total_damage = 0.0
+            destroyed = 0
+            for other in self.towers:
+                if other.player == ant.player:
+                    continue
+                if hex_distance(other.x, other.y, tower.x, tower.y) > COMBAT_SELF_DESTRUCT_RANGE:
+                    continue
+                total_damage += float(min(COMBAT_SELF_DESTRUCT_DAMAGE, other.hp))
+                if other.hp <= COMBAT_SELF_DESTRUCT_DAMAGE:
+                    destroyed += 1
+            return total_damage + destroyed * ATTACK_FINISH_BONUS + SURPLUS_HP_VALUE_WEIGHT * arrival_hp
+        direct_damage = float(min(ant.tower_attack_damage, tower.hp))
+        destroy_bonus = ATTACK_FINISH_BONUS if tower.hp <= ant.tower_attack_damage else 0.0
+        return direct_damage + destroy_bonus + SURPLUS_HP_VALUE_WEIGHT * arrival_hp
+
+    def _record_enhanced_reservation(self, ant: Ant, direction: int) -> None:
+        if self.movement_policy != MOVEMENT_POLICY_ENHANCED or not self.enhanced_move_phase_active:
+            return
+        annotation = self.enhanced_move_annotations.pop(ant.ant_id, None)
+        if annotation is None:
+            return
+        if annotation.next_cell is not None and direction != NO_MOVE:
+            x, y = annotation.next_cell
+            self.enhanced_reservations[ant.player, x, y] += 1.0
+        if annotation.tower_id is not None:
+            claims = self.enhanced_tower_claims[ant.player]
+            claims[annotation.tower_id] = claims.get(annotation.tower_id, 0) + 1
 
     def _directional_field_scores(
         self,
@@ -516,6 +742,7 @@ class GameState:
         ant.set_behavior(behavior)
         if ant.kind == AntKind.COMBAT:
             ant.grant_evasion(COMBAT_INITIAL_EVASION, grant_control_free_on_deplete=True)
+        self._invalidate_enhanced_move_cache()
 
     def _spawn_ant_from_tower(self, tower: Tower, kind: AntKind, behavior: AntBehavior) -> None:
         cells = self._spawn_cells_for_tower(tower)
@@ -799,10 +1026,22 @@ class GameState:
         for effect in self.active_effects:
             if effect.weapon_type != SuperWeaponType.LIGHTNING_STORM:
                 continue
+            duration = SUPER_WEAPON_STATS[effect.weapon_type].duration
+            active_turn = duration - effect.remaining_turns + 1
             for ant in self.ants:
                 if ant.player != effect.player and ant.is_alive() and effect.in_range(ant.x, ant.y):
-                    ant.hp -= 100
-                    ant.refresh_status()
+                    ant.take_damage(LIGHTNING_STORM_ANT_DAMAGE)
+            if active_turn % LIGHTNING_STORM_TOWER_INTERVAL != 0:
+                continue
+            destroyed_ids: set[int] = set()
+            for tower in self.towers:
+                if tower.player == effect.player or not effect.in_range(tower.x, tower.y):
+                    continue
+                if tower.take_damage(LIGHTNING_STORM_TOWER_DAMAGE):
+                    destroyed_ids.add(tower.tower_id)
+            if destroyed_ids:
+                self.towers = [tower for tower in self.towers if tower.tower_id not in destroyed_ids]
+                self._mark_risk_fields_dirty()
 
     def _attack_ants(self) -> None:
         self._prepare_ants_for_attack()
@@ -927,7 +1166,7 @@ class GameState:
         probabilities = _softmax_choice(scores, temperature)
         return candidates[self._sample_index(probabilities)][0]
 
-    def _choose_ant_move(self, ant: Ant) -> int:
+    def _choose_ant_move_legacy(self, ant: Ant) -> int:
         target_x, target_y = self._move_target_for_ant(ant)
         allow_backtrack = ant.behavior in {AntBehavior.RANDOM, AntBehavior.BEWITCHED}
         candidates = self._move_candidates(ant, allow_backtrack=allow_backtrack)
@@ -984,6 +1223,140 @@ class GameState:
             best_index = max(range(len(candidates)), key=lambda index: (weighted_scores[index], raw_scores[index], -index))
             return candidates[best_index][0]
         return self._sample_move_from_scores(candidates, weighted_scores, DEFAULT_MOVE_TEMPERATURE)
+
+    def _choose_worker_move_enhanced(self, ant: Ant, candidates: list[tuple[int, int, int]]) -> int:
+        self._ensure_enhanced_move_cache()
+        current_cost = float(self.enhanced_worker_costs[ant.player, ant.x, ant.y])
+        walk_remaining: list[float] = [
+            float(self.enhanced_worker_costs[ant.player, nx, ny])
+            for _, nx, ny in candidates
+            if self._enemy_tower_at(ant.player, nx, ny) is None
+        ]
+        best_walk_remaining = min(walk_remaining) if walk_remaining else np.inf
+        blocked = not np.isfinite(best_walk_remaining) or not np.isfinite(current_cost) or (
+            current_cost - best_walk_remaining <= WORKER_ROUTE_IMPROVEMENT_EPS
+        )
+
+        weighted_scores: list[float] = []
+        raw_scores: list[float] = []
+        annotations: list[EnhancedMoveAnnotation] = []
+        for direction, nx, ny in candidates:
+            tower_target = self._enemy_tower_at(ant.player, nx, ny)
+            if tower_target is not None:
+                score = 0.0 if not np.isfinite(current_cost) else -current_cost
+                score += 1.2 * float(min(ant.tower_attack_damage, tower_target.hp))
+                if tower_target.hp <= ant.tower_attack_damage:
+                    score += ATTACK_FINISH_BONUS
+                if blocked:
+                    score += WORKER_BLOCKED_ATTACK_BONUS
+                score -= WORKER_TOWER_CLAIM_WEIGHT * self.enhanced_tower_claims[ant.player].get(tower_target.tower_id, 0)
+                score += ant.move_weights.pheromone * self._move_pheromone_score(ant, ant.x, ant.y)
+                weighted_scores.append(score)
+                raw_scores.append(score)
+                annotations.append(EnhancedMoveAnnotation(tower_id=tower_target.tower_id))
+                continue
+
+            remaining = float(self.enhanced_worker_costs[ant.player, nx, ny])
+            if not np.isfinite(remaining):
+                score = -1e9
+            else:
+                score = -remaining
+                score -= WORKER_RESERVATION_WEIGHT * float(self.enhanced_reservations[ant.player, nx, ny])
+                score -= 0.25 * self._crowding_penalty(ant, nx, ny)
+                score += ant.move_weights.pheromone * self._move_pheromone_score(ant, nx, ny)
+            weighted_scores.append(score)
+            raw_scores.append(score)
+            annotations.append(EnhancedMoveAnnotation(next_cell=(nx, ny)))
+
+        if ant.behavior in (AntBehavior.CONSERVATIVE, AntBehavior.CONTROL_FREE):
+            best_index = max(range(len(candidates)), key=lambda index: (weighted_scores[index], raw_scores[index], -index))
+            self.enhanced_move_annotations[ant.ant_id] = annotations[best_index]
+            return candidates[best_index][0]
+        chosen = self._sample_move_from_scores(candidates, weighted_scores, DEFAULT_MOVE_TEMPERATURE)
+        chosen_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == chosen)
+        self.enhanced_move_annotations[ant.ant_id] = annotations[chosen_index]
+        return chosen
+
+    def _choose_combat_move_enhanced(self, ant: Ant, candidates: list[tuple[int, int, int]]) -> int:
+        self._ensure_enhanced_move_cache()
+        enemy_towers = [tower for tower in self.towers if tower.player != ant.player]
+        weighted_scores: list[float] = []
+        raw_scores: list[float] = []
+        annotations: list[EnhancedMoveAnnotation] = []
+
+        for direction, nx, ny in candidates:
+            tower_target = self._enemy_tower_at(ant.player, nx, ny)
+            if tower_target is not None:
+                score = self._tower_attack_value(ant, tower_target, float(ant.hp))
+                score -= COMBAT_TOWER_CLAIM_WEIGHT * self.enhanced_tower_claims[ant.player].get(tower_target.tower_id, 0)
+                score += ant.move_weights.pheromone * self._move_pheromone_score(ant, ant.x, ant.y)
+                weighted_scores.append(score)
+                raw_scores.append(score)
+                annotations.append(EnhancedMoveAnnotation(tower_id=tower_target.tower_id))
+                continue
+
+            best_score = -1e9
+            best_tower_id: int | None = None
+            if enemy_towers:
+                for tower in enemy_towers:
+                    plan = self.enhanced_tower_plans[ant.player].get(tower.tower_id)
+                    if plan is None:
+                        continue
+                    travel_cost = float(plan.total_cost[nx, ny])
+                    if not np.isfinite(travel_cost):
+                        continue
+                    travel_damage = float(plan.damage_cost[nx, ny])
+                    arrival_hp = float(ant.hp) - travel_damage
+                    utility = self._tower_attack_value(ant, tower, arrival_hp)
+                    utility -= COMBAT_TRAVEL_COST_WEIGHT * travel_cost
+                    utility -= COMBAT_TOWER_CLAIM_WEIGHT * self.enhanced_tower_claims[ant.player].get(tower.tower_id, 0)
+                    if utility > best_score:
+                        best_score = utility
+                        best_tower_id = tower.tower_id
+            else:
+                remaining = float(self.enhanced_combat_base_costs[ant.player, nx, ny])
+                if np.isfinite(remaining):
+                    best_score = -remaining
+
+            if best_tower_id is None and not enemy_towers:
+                base_score = best_score
+            else:
+                base_score = best_score
+            if np.isfinite(base_score):
+                base_score -= COMBAT_RESERVATION_WEIGHT * float(self.enhanced_reservations[ant.player, nx, ny])
+                base_score += ant.move_weights.pheromone * self._move_pheromone_score(ant, nx, ny)
+            weighted_scores.append(base_score)
+            raw_scores.append(base_score)
+            annotations.append(EnhancedMoveAnnotation(next_cell=(nx, ny), tower_id=best_tower_id))
+
+        if ant.behavior in (AntBehavior.CONSERVATIVE, AntBehavior.CONTROL_FREE):
+            best_index = max(range(len(candidates)), key=lambda index: (weighted_scores[index], raw_scores[index], -index))
+            self.enhanced_move_annotations[ant.ant_id] = annotations[best_index]
+            return candidates[best_index][0]
+        chosen = self._sample_move_from_scores(candidates, weighted_scores, DEFAULT_MOVE_TEMPERATURE)
+        chosen_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == chosen)
+        self.enhanced_move_annotations[ant.ant_id] = annotations[chosen_index]
+        return chosen
+
+    def _choose_ant_move_enhanced(self, ant: Ant) -> int:
+        allow_backtrack = ant.behavior in {AntBehavior.RANDOM, AntBehavior.BEWITCHED}
+        candidates = self._move_candidates(ant, allow_backtrack=allow_backtrack)
+        if not candidates and not allow_backtrack:
+            candidates = self._move_candidates(ant, allow_backtrack=True)
+        if not candidates:
+            return NO_MOVE
+        if ant.behavior == AntBehavior.RANDOM:
+            return candidates[self._random_index(len(candidates))][0]
+        if ant.behavior == AntBehavior.BEWITCHED:
+            return self._choose_ant_move_legacy(ant)
+        if ant.kind == AntKind.COMBAT:
+            return self._choose_combat_move_enhanced(ant, candidates)
+        return self._choose_worker_move_enhanced(ant, candidates)
+
+    def _choose_ant_move(self, ant: Ant) -> int:
+        if self.movement_policy == MOVEMENT_POLICY_LEGACY:
+            return self._choose_ant_move_legacy(ant)
+        return self._choose_ant_move_enhanced(ant)
 
     def _attack_tower_from_ant(self, ant: Ant, tower: Tower) -> None:
         if ant.should_self_destruct_on_tower_attack:
@@ -1046,12 +1419,15 @@ class GameState:
             ant.refresh_status()
 
     def _move_ants(self) -> None:
+        self._begin_move_phase()
         for ant in self.ants:
             ant.refresh_status()
             direction = NO_MOVE
             if ant.status == AntStatus.ALIVE:
                 direction = self._choose_ant_move(ant)
+                self._record_enhanced_reservation(ant, direction)
             self._resolve_ant_step(ant, direction)
+        self._end_move_phase()
         self._teleport_ants()
 
     def _update_pheromone(self) -> None:

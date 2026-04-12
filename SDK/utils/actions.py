@@ -7,6 +7,9 @@ import numpy as np
 from SDK.utils.constants import (
     ANT_GENERATION_CYCLE,
     ANT_MAX_HP,
+    LIGHTNING_STORM_ANT_DAMAGE,
+    LIGHTNING_STORM_TOWER_DAMAGE,
+    LIGHTNING_STORM_TOWER_INTERVAL,
     MAX_ACTIONS,
     OperationType,
     PLAYER_BASES,
@@ -146,13 +149,15 @@ class ActionCatalog:
         my_ants = state.ants_of(player)
         enemy_towers = state.towers_of(enemy)
 
-        if enemy_ants and state.weapon_cooldowns[player, SuperWeaponType.LIGHTNING_STORM] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cost:
+        if (enemy_ants or enemy_towers) and state.weapon_cooldowns[player, SuperWeaponType.LIGHTNING_STORM] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cost:
+            centers = {(ant.x, ant.y) for ant in enemy_ants}
+            centers.update((tower.x, tower.y) for tower in enemy_towers)
             best = max(
-                ((ant.x, ant.y, self._storm_value(state, player, ant.x, ant.y)) for ant in enemy_ants),
+                ((x, y, self._storm_value(state, player, x, y)) for x, y in centers),
                 key=lambda item: item[2],
                 default=None,
             )
-            if best and best[2] > 2.5:
+            if best and best[2] > 1.5:
                 op = Operation(OperationType.USE_LIGHTNING_STORM, best[0], best[1])
                 if state.can_apply_operation(player, op):
                     results.append(ActionBundle(f"storm@{best[0]},{best[1]}", (op,), best[2], ("weapon", "storm")))
@@ -268,12 +273,28 @@ class ActionCatalog:
 
     def _storm_value(self, state: BackendState, player: int, x: int, y: int) -> float:
         enemy = 1 - player
+        stats = SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM]
+        tower_strikes = max(stats.duration // LIGHTNING_STORM_TOWER_INTERVAL, 1)
         total = 0.0
         for ant in state.ants_of(enemy):
             distance = hex_distance(x, y, ant.x, ant.y)
-            if distance <= SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].attack_range:
-                total += ant.kill_reward + (4 - distance) * 0.5
-        return total - SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cost * 0.03
+            if distance > stats.attack_range:
+                continue
+            immediate_damage = min(LIGHTNING_STORM_ANT_DAMAGE, ant.hp)
+            sustained_damage = min(ant.hp, LIGHTNING_STORM_ANT_DAMAGE * tower_strikes)
+            total += immediate_damage / max(ant.max_hp, 1) * (2.5 + ant.level)
+            total += sustained_damage / max(ant.max_hp, 1) * (0.8 + ant.level * 0.4)
+            if ant.hp <= LIGHTNING_STORM_ANT_DAMAGE:
+                total += ant.kill_reward
+            total += max(0.0, stats.attack_range + 1 - distance) * 0.2
+        for tower in state.towers_of(enemy):
+            distance = hex_distance(x, y, tower.x, tower.y)
+            if distance > stats.attack_range:
+                continue
+            projected_damage = min(tower.hp, LIGHTNING_STORM_TOWER_DAMAGE * tower_strikes)
+            total += projected_damage / max(tower.max_hp, 1) * (6.0 + tower.level * 2.5)
+            total += max(0.0, stats.attack_range + 1 - distance) * 0.15
+        return total - stats.cost * 0.03
 
     def _emp_value(self, state: BackendState, player: int, x: int, y: int) -> float:
         total = 0.0

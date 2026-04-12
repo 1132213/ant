@@ -26,6 +26,9 @@ from SDK.utils.constants import (
     PHEROMONE_INIT,
     PHEROMONE_SCALE,
     PLAYER_BASES,
+    LIGHTNING_STORM_ANT_DAMAGE,
+    LIGHTNING_STORM_TOWER_DAMAGE,
+    LIGHTNING_STORM_TOWER_INTERVAL,
     SUPER_WEAPON_STATS,
     SuperWeaponType,
     TOWER_DOWNGRADE_REFUND_RATIO,
@@ -742,6 +745,21 @@ class Simulator:
                 kept_weapons.append(weapon)
         self.info.super_weapons = kept_weapons
 
+        for weapon in self.info.super_weapons:
+            if weapon.type != SuperWeaponType.LIGHTNING_STORM or weapon.player != perspective:
+                continue
+            active_turn = SUPER_WEAPON_STATS[weapon.type].duration - weapon.left_time + 1
+            if active_turn % LIGHTNING_STORM_TOWER_INTERVAL != 0:
+                continue
+            surviving_towers: List[Tower] = []
+            for tower in self.info.towers:
+                if tower.player != weapon.player and weapon.in_range(tower.x, tower.y):
+                    tower.hp -= LIGHTNING_STORM_TOWER_DAMAGE
+                    if tower.hp <= 0:
+                        continue
+                surviving_towers.append(tower)
+            self.info.towers = surviving_towers
+
         self.info.ants = [ant for ant in self.info.ants if ant.player != perspective]
         self.info.towers = [tower for tower in self.info.towers if tower.player == perspective]
 
@@ -754,9 +772,10 @@ class Simulator:
             if weapon.type == SuperWeaponType.LIGHTNING_STORM and weapon.player == perspective:
                 for ant in self.info.ants:
                     if weapon.in_range(ant.x, ant.y):
-                        ant.hp = 0
-                        ant.state = AntState.FAIL
-                        self.info.coins[weapon.player] += ant.reward()
+                        ant.hp -= LIGHTNING_STORM_ANT_DAMAGE
+                        if ant.hp <= 0:
+                            ant.state = AntState.FAIL
+                            self.info.coins[weapon.player] += ant.reward()
             elif weapon.type == SuperWeaponType.DEFLECTOR and weapon.player == 1 - perspective:
                 for ant in self.info.ants:
                     if weapon.in_range(ant.x, ant.y):

@@ -4,13 +4,14 @@ from typing import Iterable, Protocol, runtime_checkable
 
 import numpy as np
 
-from SDK.backend.engine import GameState, PublicRoundState, TurnResolution
+from SDK.backend.engine import DEFAULT_MOVEMENT_POLICY, GameState, PublicRoundState, TurnResolution
 from SDK.backend.model import Ant, Base, Operation, Tower, WeaponEffect
 
 
 @runtime_checkable
 class BackendState(Protocol):
     seed: int
+    movement_policy: str
     round_index: int
     terminal: bool
     winner: int | None
@@ -73,8 +74,8 @@ class PythonBackendState:
         self._state = state
 
     @classmethod
-    def initial(cls, seed: int = 0) -> PythonBackendState:
-        return cls(GameState.initial(seed=seed))
+    def initial(cls, seed: int = 0, movement_policy: str = DEFAULT_MOVEMENT_POLICY) -> PythonBackendState:
+        return cls(GameState.initial(seed=seed, movement_policy=movement_policy))
 
     @property
     def seed(self) -> int:
@@ -119,6 +120,10 @@ class PythonBackendState:
     @property
     def coins(self) -> list[int]:
         return self._state.coins
+
+    @property
+    def movement_policy(self) -> str:
+        return self._state.movement_policy
 
     @property
     def pheromone(self) -> np.ndarray:

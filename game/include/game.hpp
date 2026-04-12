@@ -9,16 +9,33 @@
 #include "operation.h"
 #include "output.h"
 #include "player.h"
+#include <array>
 #include <deque>
 #include <random>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #define MAX_ROUND 512
 
 class Game {
+  public:
+    enum class MovementPolicy {
+        Legacy,
+        Enhanced,
+    };
+
   private:
     using RiskField = multi_dim_array_t<double, 2, MAP_SIZE, MAP_SIZE>;
+    using ScalarField = multi_dim_array_t<double, MAP_SIZE, MAP_SIZE>;
+    struct PathPlan {
+        ScalarField total_cost{};
+        ScalarField damage_cost{};
+    };
+    struct TowerPathPlan {
+        int tower_id = -1;
+        PathPlan plan{};
+    };
     bool is_end;
     int winner;
     int round;
@@ -56,6 +73,17 @@ class Game {
     RiskField damage_risk_field{};
     RiskField control_risk_field{};
     bool risk_fields_dirty = true;
+    MovementPolicy movement_policy = MovementPolicy::Enhanced;
+    bool enhanced_move_phase_active = false;
+    bool enhanced_move_cache_dirty = true;
+    std::array<ScalarField, 2> enhanced_worker_costs{};
+    std::array<ScalarField, 2> enhanced_combat_base_costs{};
+    std::array<ScalarField, 2> enhanced_traffic_field{};
+    std::array<ScalarField, 2> enhanced_reservations{};
+    std::array<std::vector<TowerPathPlan>, 2> enhanced_tower_plans{};
+    std::array<std::unordered_map<int, int>, 2> enhanced_tower_claims{};
+    std::unordered_map<int, std::pair<int, int>> enhanced_move_cells{};
+    std::unordered_map<int, int> enhanced_move_tower_targets{};
 
     Output output;
 
@@ -73,6 +101,8 @@ class Game {
     double random_float();
     int random_index(int bound);
     int choose_ant_move(const Ant &ant);
+    int choose_ant_move_legacy(const Ant &ant);
+    int choose_ant_move_enhanced(const Ant &ant);
     bool ant_can_walk_to(int x, int y) const;
     bool ant_can_target_cell(const Ant &ant, int x, int y) const;
     double crowding_penalty(const Ant &ant, int x, int y) const;
@@ -88,6 +118,19 @@ class Game {
     double tower_pull_score(const Ant &ant, int x, int y,
                             const DefenseTower *tower_target) const;
     Pos move_target_for_ant(const Ant &ant) const;
+    void invalidate_enhanced_move_cache();
+    void begin_move_phase();
+    void end_move_phase();
+    double cell_damage_hp(int player, int x, int y) const;
+    void compute_enhanced_traffic_field();
+    PathPlan reverse_weighted_plan(
+        int player, const std::vector<std::pair<int, int>> &sources,
+        double damage_weight, double control_weight, double traffic_weight) const;
+    void prepare_enhanced_move_cache(bool reset_reservations);
+    void ensure_enhanced_move_cache();
+    double tower_attack_value(const Ant &ant, const DefenseTower &tower, double arrival_hp) const;
+    const TowerPathPlan *tower_plan_for(int player, int tower_id) const;
+    void record_enhanced_reservation(const Ant &ant, int move);
     void teleport_ants();
     void drift_items();
     std::pair<int, int> random_bewitch_target(const Ant &ant);

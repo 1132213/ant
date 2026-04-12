@@ -65,6 +65,32 @@ def test_cpp_game_accepts_null_random_seed(tmp_path: Path) -> None:
     assert replay_path.exists()
 
 
+def test_cpp_game_accepts_movement_policy_toggle(tmp_path: Path) -> None:
+    replay_path = tmp_path / "legacy-policy-replay.json"
+    init_packet = _packet(
+        {
+            "player_list": [1, 1],
+            "player_num": 2,
+            "config": {"random_seed": 5, "movement_policy": "legacy"},
+            "replay": str(replay_path),
+        }
+    )
+    error_packet = _packet(
+        {
+            "player": -1,
+            "content": json.dumps({"player": 0, "error": 0}),
+            "time": 0,
+        }
+    )
+
+    completed = _run_game(init_packet + error_packet)
+    stderr = completed.stderr.decode("utf-8", errors="replace")
+
+    assert completed.returncode == 0
+    assert "error" not in stderr.lower()
+    assert replay_path.exists()
+
+
 def test_cpp_game_decodes_length_prefixed_ai_operations(tmp_path: Path) -> None:
     replay_path = tmp_path / "prefixed-ops-replay.json"
     init_packet = _packet(

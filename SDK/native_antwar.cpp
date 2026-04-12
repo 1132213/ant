@@ -94,7 +94,18 @@ void rewire_map(Game &game) {
     }
 }
 
-void init_game(Game &game, unsigned long long seed) {
+Game::MovementPolicy parse_movement_policy_name(const std::string &policy_name) {
+    if (policy_name == "legacy")
+        return Game::MovementPolicy::Legacy;
+    return Game::MovementPolicy::Enhanced;
+}
+
+std::string movement_policy_name(Game::MovementPolicy policy) {
+    return policy == Game::MovementPolicy::Legacy ? "legacy" : "enhanced";
+}
+
+void init_game(Game &game, unsigned long long seed,
+               Game::MovementPolicy movement_policy) {
     game.is_end = false;
     game.winner = -1;
     game.round = 0;
@@ -103,6 +114,9 @@ void init_game(Game &game, unsigned long long seed) {
     game.tower_id = 0;
     game.err_msg.clear();
     game.random_seed = seed;
+    game.movement_policy = movement_policy;
+    game.enhanced_move_phase_active = false;
+    game.enhanced_move_cache_dirty = true;
     game.rng_state = seed & ((1ULL << 48) - 1);
     game.record_file.clear();
     game.player0 = Player();
@@ -246,7 +260,11 @@ struct NativeState {
     unsigned long long seed = 0;
     std::array<int, 2> old_count = {0, 0};
 
-    explicit NativeState(unsigned long long init_seed) : seed(init_seed) { init_game(game, seed); }
+    explicit NativeState(unsigned long long init_seed,
+                         const std::string &movement_policy_name_in = "enhanced")
+        : seed(init_seed) {
+        init_game(game, seed, parse_movement_policy_name(movement_policy_name_in));
+    }
 
     NativeState clone() const {
         NativeState copy(*this);
@@ -259,6 +277,10 @@ struct NativeState {
     std::vector<int> coins() const { return coin_rows(game); }
 
     std::vector<int> old_count_rows() const { return {old_count[0], old_count[1]}; }
+
+    std::string movement_policy_name_view() const {
+        return movement_policy_name(game.movement_policy);
+    }
 
     std::vector<int> die_count() const { return die_count_rows(game); }
 
@@ -504,11 +526,14 @@ PYBIND11_MODULE(native_antwar, m) {
         .def_readwrite("arg1", &BoundOperation::arg1);
 
     py::class_<NativeState>(m, "NativeState")
-        .def(py::init<unsigned long long>())
+        .def(py::init<unsigned long long, const std::string &>(),
+             py::arg("seed"),
+             py::arg("movement_policy") = "enhanced")
         .def("clone", &NativeState::clone)
         .def_readwrite("terminal", &NativeState::terminal)
         .def_readwrite("winner", &NativeState::winner)
         .def_readonly("seed", &NativeState::seed)
+        .def_property_readonly("movement_policy", &NativeState::movement_policy_name_view)
         .def("round_index", &NativeState::round_index)
         .def("coins", &NativeState::coins)
         .def("old_count", &NativeState::old_count_rows)

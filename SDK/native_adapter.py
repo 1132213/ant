@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from SDK import native_antwar
+from SDK.backend.engine import DEFAULT_MOVEMENT_POLICY
 from SDK.utils.constants import AntBehavior, AntKind, AntStatus, OperationType, SuperWeaponType, TowerType
 from SDK.backend.engine import GameState, PublicRoundState, TurnResolution
 from SDK.backend.model import Ant, Base, Operation, Tower, WeaponEffect
@@ -19,12 +20,13 @@ def _to_python_operation(operation: native_antwar.Operation) -> Operation:
 
 
 def _build_shadow_state(native: native_antwar.NativeState) -> GameState:
-    state = GameState.initial(seed=int(native.seed))
+    state = GameState.initial(seed=int(native.seed), movement_policy=str(native.movement_policy))
     _sync_shadow_state(state, native)
     return state
 
 
 def _sync_shadow_state(state: GameState, native: native_antwar.NativeState) -> None:
+    state.movement_policy = str(native.movement_policy)
     state.round_index = int(native.round_index())
     state.coins = list(native.coins())
     native_old_count = list(native.old_count())
@@ -117,8 +119,8 @@ class NativeGameStateAdapter:
         self._refresh_cache()
 
     @classmethod
-    def initial(cls, seed: int = 0) -> NativeGameStateAdapter:
-        return cls(native_antwar.NativeState(seed))
+    def initial(cls, seed: int = 0, movement_policy: str = DEFAULT_MOVEMENT_POLICY) -> NativeGameStateAdapter:
+        return cls(native_antwar.NativeState(seed, movement_policy))
 
     def __getattr__(self, name: str):
         return getattr(self._shadow, name)

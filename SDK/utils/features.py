@@ -214,14 +214,22 @@ class FeatureExtractor:
                 state.coins[enemy] / 300.0,
                 state.bases[player].hp / 50.0,
                 state.bases[enemy].hp / 50.0,
-                state.weapon_cooldowns[player, 1] / 100.0,
-                state.weapon_cooldowns[player, 2] / 100.0,
-                state.weapon_cooldowns[player, 3] / 50.0,
-                state.weapon_cooldowns[player, 4] / 50.0,
-                state.weapon_cooldowns[enemy, 1] / 100.0,
-                state.weapon_cooldowns[enemy, 2] / 100.0,
-                state.weapon_cooldowns[enemy, 3] / 50.0,
-                state.weapon_cooldowns[enemy, 4] / 50.0,
+                state.weapon_cooldowns[player, SuperWeaponType.LIGHTNING_STORM]
+                / SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cooldown,
+                state.weapon_cooldowns[player, SuperWeaponType.EMP_BLASTER]
+                / SUPER_WEAPON_STATS[SuperWeaponType.EMP_BLASTER].cooldown,
+                state.weapon_cooldowns[player, SuperWeaponType.DEFLECTOR]
+                / SUPER_WEAPON_STATS[SuperWeaponType.DEFLECTOR].cooldown,
+                state.weapon_cooldowns[player, SuperWeaponType.EMERGENCY_EVASION]
+                / SUPER_WEAPON_STATS[SuperWeaponType.EMERGENCY_EVASION].cooldown,
+                state.weapon_cooldowns[enemy, SuperWeaponType.LIGHTNING_STORM]
+                / SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cooldown,
+                state.weapon_cooldowns[enemy, SuperWeaponType.EMP_BLASTER]
+                / SUPER_WEAPON_STATS[SuperWeaponType.EMP_BLASTER].cooldown,
+                state.weapon_cooldowns[enemy, SuperWeaponType.DEFLECTOR]
+                / SUPER_WEAPON_STATS[SuperWeaponType.DEFLECTOR].cooldown,
+                state.weapon_cooldowns[enemy, SuperWeaponType.EMERGENCY_EVASION]
+                / SUPER_WEAPON_STATS[SuperWeaponType.EMERGENCY_EVASION].cooldown,
                 state.super_weapon_usage[player] / 16.0,
                 state.super_weapon_usage[enemy] / 16.0,
             ],

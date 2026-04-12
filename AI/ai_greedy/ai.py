@@ -25,15 +25,36 @@ from SDK.backend.forecast import (
     is_valid_pos,
 )
 from SDK.utils.constants import ANT_AGE_LIMIT
+from SDK.utils.constants import (
+    BASE_HP,
+    BASE_UPGRADE_COST,
+    LEVEL2_TOWER_UPGRADE_COST,
+    LEVEL3_TOWER_UPGRADE_COST,
+    SUPER_WEAPON_STATS,
+    TOWER_DOWNGRADE_REFUND_RATIO,
+    tower_build_cost_for_count,
+)
 
 SEARCH_BUDGET = 0.15
 MAX_NODE_COUNT = 20000
-SEARCH_STAGING_ENEMY_BASE_HP = 50
+SEARCH_STAGING_ENEMY_BASE_HP = BASE_HP
 EVALUATION_HORIZON = 60
 TOWER_COUNT_SCORE = 1.0
 BASE_ARC_TARGET_DEGREES = (-30.0, 0.0, 30.0)
 BASE_ARC_TOLERANCE_DEGREES = 20.0
 BASE_ARC_MISSING_PENALTY = 8.0
+EMP_COST = SUPER_WEAPON_STATS[SuperWeaponType.EMP_BLASTER].cost
+EMP_COOLDOWN = SUPER_WEAPON_STATS[SuperWeaponType.EMP_BLASTER].cooldown
+DEFLECTOR_COST = SUPER_WEAPON_STATS[SuperWeaponType.DEFLECTOR].cost
+EVASION_COST = SUPER_WEAPON_STATS[SuperWeaponType.EMERGENCY_EVASION].cost
+EMP_BUFFER_CAP = max(EMP_COST - 1, 0)
+LEVEL2_BASE_UPGRADE_COST, LEVEL3_BASE_UPGRADE_COST = BASE_UPGRADE_COST
+LEVEL2_TOWER_TOTAL_COST = LEVEL2_TOWER_UPGRADE_COST
+LEVEL3_TOWER_TOTAL_COST = LEVEL2_TOWER_UPGRADE_COST + LEVEL3_TOWER_UPGRADE_COST
+
+
+def _total_build_investment(tower_count: int) -> int:
+    return sum(tower_build_cost_for_count(index) for index in range(max(tower_count, 0)))
 
 
 def _load_runtime_module():
@@ -292,12 +313,12 @@ class ForecastNode:
 
     def _score_tower_investment(self, towers: Sequence[Tower]) -> float:
         tower_count = len(towers)
-        score = -(pow(2, tower_count) - 1) * 15 * 0.2 * 0.75
+        score = -_total_build_investment(tower_count) * 0.2 * 0.75
         for tower in towers:
             if 0 < int(tower.type) and int(tower.type) // 10 == 0:
-                score -= 60 * 0.2 * 0.75
+                score -= LEVEL2_TOWER_TOTAL_COST * 0.2 * 0.75
             elif int(tower.type) // 10 > 0:
-                score -= 260 * 0.2 * 0.75
+                score -= LEVEL3_TOWER_TOTAL_COST * 0.2 * 0.75
         return score
 
     def _score_tower_spacing(self, towers: Sequence[Tower]) -> float:
@@ -554,11 +575,38 @@ class AI:
 
     def _opponent_emp_buffer(self, info: GameInfo) -> int:
         cd = info.super_weapon_cd[1 - self.side][int(SuperWeaponType.EMP_BLASTER)]
-        if cd >= 90:
+        if cd >= EMP_COOLDOWN - 10:
             return 0
         if cd > 0:
-            return max(int(min(info.coins[1 - self.side], 149) - cd * 1.66), 0)
-        return min(info.coins[1 - self.side], 149)
+            return max(int(min(info.coins[1 - self.side], EMP_BUFFER_CAP) - cd * 1.66), 0)
+        return min(info.coins[1 - self.side], EMP_BUFFER_CAP)
+
+    def _max_future_liquidation_coins(
+        self,
+        info: GameInfo,
+        operations: Sequence[Operation],
+    ) -> int:
+        trial = info.clone()
+        for op in operations:
+            trial.apply_operation(self.side, op)
+        while True:
+            tower_ids = [
+                tower.id
+                for tower in trial.towers
+                if tower.player == self.side and not trial.tower_under_emp(tower)
+            ]
+            if not tower_ids:
+                break
+            progressed = False
+            for tower_id in tower_ids:
+                tower = trial.tower_of_id(tower_id)
+                if tower is None:
+                    continue
+                trial.apply_operation(self.side, Operation(OperationType.DOWNGRADE_TOWER, tower_id))
+                progressed = True
+            if not progressed:
+                break
+        return trial.coins[self.side]
 
     def _cash_safety_gap(self, info: GameInfo) -> int:
         return min(0, info.coins[self.side] - self._opponent_emp_buffer(info))
@@ -806,9 +854,6 @@ class AI:
         self, coins: int, towers: int, coin_need: int, info: GameInfo
     ) -> Optional[Tuple[List[Operation], int, int]]:
         ops: List[Operation] = []
-        max_coins = coins
-        valid_tower_num = 0
-        start_tower_num = info.tower_num_of_player(self.side)
 
         for tower in info.towers:
             if tower.player != self.side or info.tower_under_emp(tower):
@@ -818,17 +863,11 @@ class AI:
                 towers -= 1
             else:
                 coins += info.downgrade_tower_income(int(tower.type))
-                if int(tower.type) // 10 == 0:
-                    max_coins += 48
-                else:
-                    max_coins += 48 + 160
             ops.append(Operation(OperationType.DOWNGRADE_TOWER, tower.id))
-            valid_tower_num += 1
             if coins >= coin_need:
                 return ops, coins, towers
 
-        max_coins += (pow(2, start_tower_num) - pow(2, start_tower_num - valid_tower_num)) * 12
-        if max_coins >= coin_need:
+        if self._max_future_liquidation_coins(info, ops) >= coin_need:
             return ops, coins, towers
         return None
 
@@ -986,7 +1025,7 @@ class AI:
 
         prefix: List[Operation] = []
         if not can_emp and info.super_weapon_cd[self.side][int(SuperWeaponType.EMP_BLASTER)] == 0:
-            sale = self._liquidate_cautious(wallet, tower_count, 150, info)
+            sale = self._liquidate_cautious(wallet, tower_count, EMP_COST, info)
             if sale is not None:
                 prefix, wallet, tower_count = sale
 
@@ -1000,7 +1039,7 @@ class AI:
                 )
             )
         ):
-            sale = self._liquidate_cautious(wallet, tower_count, 100, info)
+            sale = self._liquidate_cautious(wallet, tower_count, min(DEFLECTOR_COST, EVASION_COST), info)
             if sale is not None:
                 prefix, wallet, tower_count = sale
 
@@ -1171,8 +1210,8 @@ class AI:
         enemy_wallet = info.coins[1 - self.side]
         prefix: List[Operation] = []
 
-        if wallet - enemy_wallet < 100 or wallet < 150:
-            sale = self._liquidate_cautious(wallet, tower_count, max(enemy_wallet + 100, 150), info)
+        if wallet - enemy_wallet < 100 or wallet < EMP_COST:
+            sale = self._liquidate_cautious(wallet, tower_count, max(enemy_wallet + 100, EMP_COST), info)
             if sale is None:
                 return []
             prefix, wallet, tower_count = sale
@@ -1236,27 +1275,27 @@ class AI:
 
         if self.current_round <= 460:
             if info.bases[self.side].ant_level == 0:
-                if info.coins[self.side] >= 200:
+                if info.coins[self.side] >= LEVEL2_BASE_UPGRADE_COST:
                     return [Operation(OperationType.UPGRADE_GENERATED_ANT)]
             elif info.bases[self.side].ant_level == 1:
-                if info.coins[self.side] >= 250:
+                if info.coins[self.side] >= LEVEL3_BASE_UPGRADE_COST:
                     return [Operation(OperationType.UPGRADE_GENERATED_ANT)]
                 sale = self._liquidate_cautious(
                     info.coins[self.side],
                     info.tower_num_of_player(self.side),
-                    250,
+                    LEVEL3_BASE_UPGRADE_COST,
                     info,
                 )
                 if sale is not None:
                     ops, _, _ = sale
                     return [*ops, Operation(OperationType.UPGRADE_GENERATED_ANT)]
             elif info.bases[self.side].gen_speed_level == 0:
-                if info.coins[self.side] >= 200:
+                if info.coins[self.side] >= LEVEL2_BASE_UPGRADE_COST:
                     return [Operation(OperationType.UPGRADE_GENERATION_SPEED)]
                 sale = self._liquidate_all(
                     info.coins[self.side],
                     info.tower_num_of_player(self.side),
-                    200,
+                    LEVEL2_BASE_UPGRADE_COST,
                     info,
                 )
                 if sale is not None:
@@ -1265,7 +1304,7 @@ class AI:
             return self._try_use_superweapon(info)
 
         if self.current_round <= 470 and info.bases[self.side].ant_level == 0:
-            if info.coins[self.side] >= 200:
+            if info.coins[self.side] >= LEVEL2_BASE_UPGRADE_COST:
                 return [Operation(OperationType.UPGRADE_GENERATED_ANT)]
             return []
         return self._try_use_superweapon(info)

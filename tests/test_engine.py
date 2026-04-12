@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from SDK.utils.constants import LAMBDA_DENOM, LAMBDA_NUM, PHEROMONE_FAIL_BONUS_INT, TAU_BASE_ADD_INT
 from SDK.utils.constants import ANT_AGE_LIMIT, ANT_TELEPORT_INTERVAL, ANT_TELEPORT_RATIO, BASIC_INCOME, COMBAT_ANT_KILL_REWARD, INITIAL_COINS, TOWER_DOWNGRADE_REFUND_RATIO, AntBehavior, AntKind, AntStatus, OperationType, PATH_CELLS, PLAYER_BASES, SPECIAL_BEHAVIOR_DECAY_TURNS, SPAWN_PROFILE_WEIGHTS, SuperWeaponType, TowerType
-from SDK.backend.engine import GameState, PublicRoundState
+from SDK.backend.engine import (
+    MOVEMENT_POLICY_ENHANCED,
+    MOVEMENT_POLICY_LEGACY,
+    GameState,
+    PublicRoundState,
+)
 from SDK.backend.model import Ant, Operation, Tower, WeaponEffect
 from SDK.utils.geometry import direction_between, hex_distance, is_path, neighbors
 
@@ -329,7 +334,7 @@ def test_directional_control_field_penalizes_lane_toward_future_control_zone() -
 def test_default_ant_prefers_advancing_move_on_clear_path() -> None:
     advancing = 0
     for seed in range(16):
-        state = GameState.initial(seed=seed)
+        state = GameState.initial(seed=seed, movement_policy=MOVEMENT_POLICY_LEGACY)
         ant = Ant(0, 0, 7, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT)
         before = hex_distance(ant.x, ant.y, *PLAYER_BASES[1])
         state._resolve_ant_step(ant, state._choose_ant_move(ant))
@@ -340,7 +345,7 @@ def test_default_ant_prefers_advancing_move_on_clear_path() -> None:
 
 
 def test_combat_ant_targets_nearest_enemy_tower_before_base() -> None:
-    state = GameState.initial(seed=17)
+    state = GameState.initial(seed=17, movement_policy=MOVEMENT_POLICY_LEGACY)
     ant = Ant(0, 0, 8, 9, hp=30, level=0, kind=AntKind.COMBAT, behavior=AntBehavior.CONSERVATIVE)
     state.ants.append(ant)
     state.towers.extend(
@@ -358,7 +363,7 @@ def test_combat_ant_targets_nearest_enemy_tower_before_base() -> None:
 
 
 def test_worker_ant_prefers_safe_advancing_lane_over_adjacent_tower_attack() -> None:
-    state = GameState.initial(seed=18)
+    state = GameState.initial(seed=18, movement_policy=MOVEMENT_POLICY_LEGACY)
     ant = Ant(0, 0, 11, 8, hp=20, level=0, behavior=AntBehavior.CONSERVATIVE)
     state.ants.append(ant)
     state.towers.append(Tower(0, 1, 12, 9, TowerType.BASIC, cooldown_clock=2.0))
@@ -367,7 +372,7 @@ def test_worker_ant_prefers_safe_advancing_lane_over_adjacent_tower_attack() -> 
 
 
 def test_worker_ant_attacks_adjacent_tower_when_pushing_forward_is_riskier() -> None:
-    state = GameState.initial(seed=19)
+    state = GameState.initial(seed=19, movement_policy=MOVEMENT_POLICY_LEGACY)
     ant = Ant(0, 0, 11, 9, hp=20, level=0, behavior=AntBehavior.CONSERVATIVE)
     state.ants.append(ant)
     state.towers.extend(
@@ -378,6 +383,34 @@ def test_worker_ant_attacks_adjacent_tower_when_pushing_forward_is_riskier() -> 
     )
     chosen = state._choose_ant_move(ant)
     assert chosen == 4
+
+
+def test_enhanced_worker_reservations_split_over_equivalent_frontline_lanes() -> None:
+    state = GameState.initial(seed=1, movement_policy=MOVEMENT_POLICY_ENHANCED)
+    first = Ant(100, 0, 8, 9, hp=20, level=0, behavior=AntBehavior.CONSERVATIVE)
+    second = Ant(101, 0, 8, 9, hp=20, level=0, behavior=AntBehavior.CONSERVATIVE)
+    state.ants.extend([first, second])
+
+    state._move_ants()
+
+    assert (first.x, first.y) == (8, 8)
+    assert (second.x, second.y) == (8, 10)
+
+
+def test_enhanced_combat_ant_prefers_flanking_path_over_stack_of_tower_fire() -> None:
+    state = GameState.initial(seed=1, movement_policy=MOVEMENT_POLICY_ENHANCED)
+    ant = Ant(0, 0, 8, 9, hp=30, level=0, kind=AntKind.COMBAT, behavior=AntBehavior.CONSERVATIVE)
+    state.ants.append(ant)
+    state.towers.extend(
+        [
+            Tower(0, 1, 12, 9, TowerType.BASIC, cooldown_clock=2.0),
+            Tower(1, 1, 14, 9, TowerType.HEAVY, cooldown_clock=2.0),
+        ]
+    )
+
+    chosen = state._choose_ant_move(ant)
+
+    assert chosen == 3
 
 
 def test_teleport_keeps_own_half_ant_in_own_half() -> None:
@@ -451,6 +484,46 @@ def test_lightning_and_emp_effects_drift_each_tick() -> None:
     assert all(state.active_effects[index].remaining_turns == 2 for index in range(2))
     assert all(0 <= x < 19 and 0 <= y < 19 for x, y in after)
     assert before != after
+
+
+def test_lightning_storm_damages_enemy_worker_and_combat_ants() -> None:
+    state = GameState.initial(seed=12)
+    state.ants = [
+        Ant(1, 1, 9, 9, hp=25, level=1),
+        Ant(2, 1, 10, 9, hp=30, level=0, kind=AntKind.COMBAT),
+        Ant(3, 0, 9, 9, hp=20, level=0),
+    ]
+    state.active_effects = [WeaponEffect(SuperWeaponType.LIGHTNING_STORM, 0, 9, 9, 20)]
+
+    state._apply_lightning_storm()
+
+    ants = {ant.ant_id: ant for ant in state.ants}
+    assert ants[1].hp == 5
+    assert ants[2].hp == 10
+    assert ants[3].hp == 20
+
+
+def test_lightning_storm_only_hits_enemy_towers_on_every_fifth_active_turn() -> None:
+    state = GameState.initial(seed=14)
+    state.towers = [
+        Tower(1, 1, 9, 9, TowerType.PRODUCER, hp=15),
+        Tower(2, 1, 13, 9, TowerType.PRODUCER, hp=15),
+        Tower(3, 0, 9, 9, TowerType.PRODUCER, hp=15),
+    ]
+    state.active_effects = [WeaponEffect(SuperWeaponType.LIGHTNING_STORM, 0, 9, 9, 17)]
+
+    state._apply_lightning_storm()
+    towers = {tower.tower_id: tower for tower in state.towers}
+    assert towers[1].hp == 15
+    assert towers[2].hp == 15
+    assert towers[3].hp == 15
+
+    state.active_effects[0].remaining_turns = 16
+    state._apply_lightning_storm()
+    towers = {tower.tower_id: tower for tower in state.towers}
+    assert towers[1].hp == 12
+    assert towers[2].hp == 15
+    assert towers[3].hp == 15
 
 
 def test_public_round_state_serializes_true_age() -> None:
