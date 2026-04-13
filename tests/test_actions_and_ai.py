@@ -100,22 +100,22 @@ def test_action_catalog_skips_max_level_base_upgrades() -> None:
     )
 
 
-def test_action_catalog_skips_generation_upgrade_when_next_level_has_no_real_gain() -> None:
+def test_action_catalog_offers_generation_upgrade_when_next_level_improves_cadence() -> None:
     state = GameState.initial(seed=18)
     state.coins[0] = 9999
     state.bases[0].generation_level = 0
 
     catalog = ActionCatalog(max_actions=64)
-    bundles = catalog.build(state, 0)
+    bundles = catalog._base_upgrade_candidates(state, 0)
 
-    assert all(
-        op.op_type != OperationType.UPGRADE_GENERATION_SPEED
+    assert any(
+        op.op_type == OperationType.UPGRADE_GENERATION_SPEED
         for bundle in bundles
         for op in bundle.operations
     )
 
 
-def test_feature_extractor_clamps_generation_value_when_cycle_plateaus() -> None:
+def test_feature_extractor_increases_generation_value_when_cycle_improves() -> None:
     extractor = FeatureExtractor()
     state_level1 = GameState.initial(seed=19)
     state_level2 = GameState.initial(seed=20)
@@ -125,7 +125,7 @@ def test_feature_extractor_clamps_generation_value_when_cycle_plateaus() -> None
     summary1 = extractor.summarize(state_level1, 0).named
     summary2 = extractor.summarize(state_level2, 0).named
 
-    assert summary1["generation_level"] == summary2["generation_level"]
+    assert summary2["generation_level"] > summary1["generation_level"]
 
 
 def test_action_catalog_skips_ant_upgrade_when_next_level_has_no_real_gain() -> None:

@@ -39,7 +39,8 @@ def test_base_upgrade_curves_match_spec() -> None:
     assert state.bases[0].should_spawn(1) is False
     assert state.bases[0].should_spawn(2) is False
     assert state.bases[0].should_spawn(3) is False
-    assert state.bases[0].should_spawn(4) is True
+    assert state.bases[0].should_spawn(4) is False
+    assert state.bases[0].should_spawn(5) is True
     assert state.bases[0].spawn_ant(1).hp == 20
 
     state.bases[0].generation_level = 1
