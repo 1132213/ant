@@ -100,6 +100,8 @@ class Game {
     unsigned long long next_random();
     double random_float();
     int random_index(int bound);
+    std::vector<std::tuple<int, int, int>> legal_move_candidates(const Ant &ant) const;
+    int choose_random_legal_move(const Ant &ant);
     int choose_ant_move(const Ant &ant);
     int choose_ant_move_legacy(const Ant &ant);
     int choose_ant_move_enhanced(const Ant &ant);
@@ -132,6 +134,7 @@ class Game {
     const TowerPathPlan *tower_plan_for(int player, int tower_id) const;
     void record_enhanced_reservation(const Ant &ant, int move);
     void teleport_ants();
+    void resolve_random_move_steps(Ant &ant, int steps);
     void drift_items();
     std::pair<int, int> random_bewitch_target(const Ant &ant);
     int half_plane_delta(int player, int x, int y) const;

@@ -68,28 +68,28 @@ def test_base_upgrade_curves_match_spec() -> None:
 
 def test_tower_rebalance_stats_match_spec() -> None:
     assert Tower(0, 0, 6, 9, TowerType.BASIC).attack_range == 1
-    assert Tower(0, 0, 6, 9, TowerType.ICE).attack_range == 1
+    assert Tower(0, 0, 6, 9, TowerType.ICE).attack_range == 2
     assert Tower(0, 0, 6, 9, TowerType.QUICK).attack_range == 1
     assert Tower(0, 0, 6, 9, TowerType.DOUBLE).attack_range == 3
     assert Tower(0, 0, 6, 9, TowerType.SNIPER).attack_range == 4
     assert Tower(0, 0, 6, 9, TowerType.HEAVY).damage == 12
-    assert Tower(0, 0, 6, 9, TowerType.HEAVY_PLUS).damage == 25
+    assert Tower(0, 0, 6, 9, TowerType.HEAVY_PLUS).damage == 24
     assert Tower(0, 0, 6, 9, TowerType.HEAVY_PLUS).attack_range == 1
-    assert Tower(0, 0, 6, 9, TowerType.ICE).damage == 8
-    assert Tower(0, 0, 6, 9, TowerType.BEWITCH).damage == 8
+    assert Tower(0, 0, 6, 9, TowerType.ICE).damage == 12
+    assert Tower(0, 0, 6, 9, TowerType.BEWITCH).damage == 14
     assert Tower(0, 0, 6, 9, TowerType.BEWITCH).speed == 2.0
     assert Tower(0, 0, 6, 9, TowerType.QUICK).damage == 6
     assert Tower(0, 0, 6, 9, TowerType.QUICK_PLUS).damage == 6
     assert Tower(0, 0, 6, 9, TowerType.QUICK_PLUS).attack_range == 1
     assert Tower(0, 0, 6, 9, TowerType.DOUBLE).damage == 6
     assert Tower(0, 0, 6, 9, TowerType.DOUBLE).speed == 2.0
-    assert Tower(0, 0, 6, 9, TowerType.MORTAR).damage == 8
-    assert Tower(0, 0, 6, 9, TowerType.MORTAR_PLUS).damage == 15
+    assert Tower(0, 0, 6, 9, TowerType.MORTAR).damage == 12
+    assert Tower(0, 0, 6, 9, TowerType.MORTAR_PLUS).damage == 18
     assert Tower(0, 0, 6, 9, TowerType.MORTAR_PLUS).attack_range == 2
-    assert Tower(0, 0, 6, 9, TowerType.PULSE).damage == 8
+    assert Tower(0, 0, 6, 9, TowerType.PULSE).damage == 14
     assert Tower(0, 0, 6, 9, TowerType.PULSE).speed == 4.0
     assert Tower(0, 0, 6, 9, TowerType.PULSE).attack_range == 2
-    assert Tower(0, 0, 6, 9, TowerType.MISSILE).damage == 15
+    assert Tower(0, 0, 6, 9, TowerType.MISSILE).damage == 18
     assert Tower(0, 0, 6, 9, TowerType.MISSILE).attack_range == 3
     assert Tower(0, 0, 6, 9, TowerType.PRODUCER).stats.spawn_interval == 8
     assert Tower(0, 0, 6, 9, TowerType.PRODUCER_FAST).stats.spawn_interval == 6
@@ -221,7 +221,7 @@ def test_pulse_hits_only_enemies_within_declared_range() -> None:
     far = Ant(1, 1, 9, 9, hp=20, level=0)
     state.ants.extend([near, far])
     assert state._tower_attack(tower)
-    assert near.hp == 12
+    assert near.hp == 6
     assert near.behavior == AntBehavior.RANDOM
     assert far.hp == 20
     assert far.behavior == AntBehavior.DEFAULT
@@ -235,8 +235,8 @@ def test_mortar_hits_enemies_within_range_two_blast() -> None:
     outside = Ant(2, 1, 11, 9, hp=20, level=0)
     state.ants.extend([target, splash, outside])
     assert state._tower_attack(tower)
-    assert target.hp == 12
-    assert splash.hp == 12
+    assert target.hp == 8
+    assert splash.hp == 8
     assert outside.hp == 20
 
 
@@ -248,8 +248,8 @@ def test_missile_hits_enemies_within_range_three_blast() -> None:
     outside = Ant(2, 1, 13, 9, hp=30, level=0)
     state.ants.extend([target, splash, outside])
     assert state._tower_attack(tower)
-    assert target.hp == 15
-    assert splash.hp == 15
+    assert target.hp == 12
+    assert splash.hp == 12
     assert outside.hp == 30
 
 
@@ -264,7 +264,7 @@ def test_ice_freeze_promotes_ant_to_random_after_thaw() -> None:
     assert ant.behavior == AntBehavior.RANDOM
 
 
-def test_control_free_ant_ignores_control_and_teleport() -> None:
+def test_control_free_ant_ignores_control_and_random_move_phase() -> None:
     state = GameState.initial(seed=9)
     immune = Ant(0, 1, 8, 9, hp=10, level=0, behavior=AntBehavior.CONTROL_FREE)
     target = Ant(1, 1, 9, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT)
@@ -326,7 +326,7 @@ def test_directional_control_field_penalizes_lane_toward_future_control_zone() -
     east_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == 4)
     west_index = next(index for index, (direction, _, _) in enumerate(candidates) if direction == 1)
     state._refresh_static_risk_fields()
-    assert state.control_risk_field[0, 10, 9] == 0.0
+    assert state.control_risk_field[0, 10, 9] == 1.0
     control_scores = state._directional_field_scores(ant, candidates, state.control_risk_field)
     assert control_scores[east_index] > control_scores[west_index]
 
@@ -413,28 +413,78 @@ def test_enhanced_combat_ant_prefers_flanking_path_over_stack_of_tower_fire() ->
     assert chosen == 3
 
 
-def test_teleport_keeps_own_half_ant_in_own_half() -> None:
+def test_random_move_phase_resolves_three_steps_for_selected_ant() -> None:
     state = GameState.initial(seed=10)
     ant = Ant(0, 0, 4, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT)
     state.ants.append(ant)
-    state.round_index = ANT_TELEPORT_INTERVAL - 1
-    state._teleport_ants()
-    assert (ant.x, ant.y) in PATH_CELLS
-    assert state._ant_in_own_half(ant)
 
+    original_random_index = GameState._random_index
+    original_choose_random_legal_move = GameState._choose_random_legal_move
+    random_index_values = iter([0, 0, 0, 0])
+    random_move_calls = {"count": 0}
 
-def test_teleport_can_send_enemy_half_ant_anywhere_on_map() -> None:
-    landed_outside_own_half = False
-    for seed in range(32):
-        state = GameState.initial(seed=seed)
-        ant = Ant(0, 0, 12, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT)
-        state.ants.append(ant)
+    def fake_random_index(self, bound: int) -> int:
+        value = next(random_index_values)
+        assert 0 <= value < bound
+        return value
+
+    def fake_choose_random_legal_move(self, moving_ant: Ant) -> int:
+        random_move_calls["count"] += 1
+        return 4
+
+    GameState._random_index = fake_random_index
+    GameState._choose_random_legal_move = fake_choose_random_legal_move
+    try:
         state.round_index = ANT_TELEPORT_INTERVAL - 1
         state._teleport_ants()
-        if not state._ant_in_own_half(ant):
-            landed_outside_own_half = True
-            break
-    assert landed_outside_own_half
+    finally:
+        GameState._random_index = original_random_index
+        GameState._choose_random_legal_move = original_choose_random_legal_move
+
+    assert random_move_calls["count"] == 3
+    assert ant.path_len_total == 3
+    assert (ant.x, ant.y) == (7, 9)
+    assert ant.trail_cells[-3:] == [(5, 9), (6, 9), (7, 9)]
+
+
+def test_random_move_steps_recompute_algorithmic_path_after_each_step() -> None:
+    state = GameState.initial(seed=11)
+    ant = Ant(0, 0, 4, 9, hp=10, level=0, behavior=AntBehavior.DEFAULT)
+    state.ants.append(ant)
+
+    original_random_index = GameState._random_index
+    original_choose_ant_move = GameState._choose_ant_move
+    original_invalidate_cache = GameState._invalidate_enhanced_move_cache
+    random_index_values = iter([2, 2, 2])
+    seen_positions: list[tuple[int, int]] = []
+    invalidation_count = {"count": 0}
+
+    def fake_random_index(self, bound: int) -> int:
+        value = next(random_index_values)
+        assert 0 <= value < bound
+        return value
+
+    def fake_choose_ant_move(self, moving_ant: Ant) -> int:
+        seen_positions.append((moving_ant.x, moving_ant.y))
+        return 4
+
+    def fake_invalidate_enhanced_move_cache(self) -> None:
+        invalidation_count["count"] += 1
+
+    GameState._random_index = fake_random_index
+    GameState._choose_ant_move = fake_choose_ant_move
+    GameState._invalidate_enhanced_move_cache = fake_invalidate_enhanced_move_cache
+    try:
+        state._resolve_random_move_steps(ant)
+    finally:
+        GameState._random_index = original_random_index
+        GameState._choose_ant_move = original_choose_ant_move
+        GameState._invalidate_enhanced_move_cache = original_invalidate_cache
+
+    assert seen_positions == [(4, 9), (5, 9), (6, 9)]
+    assert invalidation_count["count"] == 3
+    assert ant.path_len_total == 3
+    assert (ant.x, ant.y) == (7, 9)
 
 
 def test_spawn_profile_weights_match_spec() -> None:

@@ -97,20 +97,6 @@ ATTACK_FINISH_BONUS = 3.00
 SURPLUS_HP_VALUE_WEIGHT = 0.15
 
 
-@lru_cache(maxsize=2)
-def _half_cells(player: int) -> tuple[tuple[int, int], ...]:
-    own_base = PLAYER_BASES[player]
-    enemy_base = PLAYER_BASES[1 - player]
-    cells: list[tuple[int, int]] = []
-    for x in range(MAP_SIZE):
-        for y in range(MAP_SIZE):
-            if not is_path(x, y):
-                continue
-            if hex_distance(x, y, *own_base) <= hex_distance(x, y, *enemy_base):
-                cells.append((x, y))
-    return tuple(cells)
-
-
 def _half_plane_delta(player: int, x: int, y: int) -> int:
     own_base = PLAYER_BASES[player]
     enemy_base = PLAYER_BASES[1 - player]
@@ -1155,6 +1141,19 @@ class GameState:
             out.append((direction, nx, ny))
         return out
 
+    def _legal_move_candidates(self, ant: Ant) -> list[tuple[int, int, int]]:
+        allow_backtrack = ant.behavior in {AntBehavior.RANDOM, AntBehavior.BEWITCHED}
+        candidates = self._move_candidates(ant, allow_backtrack=allow_backtrack)
+        if not candidates and not allow_backtrack:
+            candidates = self._move_candidates(ant, allow_backtrack=True)
+        return candidates
+
+    def _choose_random_legal_move(self, ant: Ant) -> int:
+        candidates = self._legal_move_candidates(ant)
+        if not candidates:
+            return NO_MOVE
+        return candidates[self._random_index(len(candidates))][0]
+
     def _sample_move_from_scores(
         self,
         candidates: list[tuple[int, int, int]],
@@ -1168,10 +1167,7 @@ class GameState:
 
     def _choose_ant_move_legacy(self, ant: Ant) -> int:
         target_x, target_y = self._move_target_for_ant(ant)
-        allow_backtrack = ant.behavior in {AntBehavior.RANDOM, AntBehavior.BEWITCHED}
-        candidates = self._move_candidates(ant, allow_backtrack=allow_backtrack)
-        if not candidates and not allow_backtrack:
-            candidates = self._move_candidates(ant, allow_backtrack=True)
+        candidates = self._legal_move_candidates(ant)
         if not candidates:
             return -1
 
@@ -1339,10 +1335,7 @@ class GameState:
         return chosen
 
     def _choose_ant_move_enhanced(self, ant: Ant) -> int:
-        allow_backtrack = ant.behavior in {AntBehavior.RANDOM, AntBehavior.BEWITCHED}
-        candidates = self._move_candidates(ant, allow_backtrack=allow_backtrack)
-        if not candidates and not allow_backtrack:
-            candidates = self._move_candidates(ant, allow_backtrack=True)
+        candidates = self._legal_move_candidates(ant)
         if not candidates:
             return NO_MOVE
         if ant.behavior == AntBehavior.RANDOM:
@@ -1394,6 +1387,18 @@ class GameState:
         ant.record_move(direction)
         ant.refresh_status()
 
+    def _resolve_random_move_steps(self, ant: Ant, *, steps: int = 3) -> None:
+        for _ in range(steps):
+            ant.refresh_status()
+            if ant.status in (AntStatus.FAIL, AntStatus.TOO_OLD):
+                break
+            if self._random_index(3) < 2:
+                direction = self._choose_random_legal_move(ant)
+            else:
+                direction = self._choose_ant_move(ant)
+            self._resolve_ant_step(ant, direction)
+            self._invalidate_enhanced_move_cache()
+
     def _teleport_ants(self) -> None:
         if ANT_TELEPORT_INTERVAL <= 0 or (self.round_index + 1) % ANT_TELEPORT_INTERVAL != 0:
             return
@@ -1411,12 +1416,7 @@ class GameState:
         while pool and len(chosen) < teleport_count:
             chosen.append(pool.pop(self._random_index(len(pool))))
         for ant in chosen:
-            legal_cells = _half_cells(ant.player) if self._ant_in_own_half(ant) else PATH_CELLS
-            if not legal_cells:
-                break
-            target_x, target_y = legal_cells[self._random_index(len(legal_cells))]
-            ant.teleport_to(target_x, target_y)
-            ant.refresh_status()
+            self._resolve_random_move_steps(ant)
 
     def _move_ants(self) -> None:
         self._begin_move_phase()

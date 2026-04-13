@@ -164,6 +164,37 @@ bool Game::ant_can_target_cell(const Ant &ant, int x, int y) const {
     return tower != nullptr;
 }
 
+std::vector<std::tuple<int, int, int>>
+Game::legal_move_candidates(const Ant &ant) const {
+    bool allow_backtrack = ant.get_behavior() == Ant::Behavior::Randomized ||
+                           ant.get_behavior() == Ant::Behavior::Bewitched;
+    std::vector<std::tuple<int, int, int>> candidates;
+    auto collect = [&](bool allow_reverse) {
+        candidates.clear();
+        for (int direction = 0; direction < 6; ++direction) {
+            int nx = ant.get_x() + ant_dx[ant.get_y() % 2][direction][0];
+            int ny = ant.get_y() + ant_dx[ant.get_y() % 2][direction][1];
+            if (!allow_reverse && ant.get_last_move() >= 0 &&
+                ant.get_last_move() == ((direction + 3) % 6))
+                continue;
+            if (!ant_can_target_cell(ant, nx, ny))
+                continue;
+            candidates.emplace_back(direction, nx, ny);
+        }
+    };
+    collect(allow_backtrack);
+    if (candidates.empty() && !allow_backtrack)
+        collect(true);
+    return candidates;
+}
+
+int Game::choose_random_legal_move(const Ant &ant) {
+    std::vector<std::tuple<int, int, int>> candidates = legal_move_candidates(ant);
+    if (candidates.empty())
+        return Ant::NoMove;
+    return std::get<0>(candidates[random_index(static_cast<int>(candidates.size()))]);
+}
+
 void Game::mark_risk_fields_dirty() {
     risk_fields_dirty = true;
     invalidate_enhanced_move_cache();
@@ -783,25 +814,7 @@ void Game::damage_ant_by_tower(DefenseTower &tower, Ant &ant) {
 int Game::choose_ant_move_legacy(const Ant &ant) {
     refresh_static_risk_fields();
     Pos target = move_target_for_ant(ant);
-    bool allow_backtrack = ant.get_behavior() == Ant::Behavior::Randomized ||
-                           ant.get_behavior() == Ant::Behavior::Bewitched;
-    std::vector<std::tuple<int, int, int>> candidates;
-    auto collect = [&](bool allow_reverse) {
-        candidates.clear();
-        for (int direction = 0; direction < 6; ++direction) {
-            int nx = ant.get_x() + ant_dx[ant.get_y() % 2][direction][0];
-            int ny = ant.get_y() + ant_dx[ant.get_y() % 2][direction][1];
-            if (!allow_reverse && ant.get_last_move() >= 0 &&
-                ant.get_last_move() == ((direction + 3) % 6))
-                continue;
-            if (!ant_can_target_cell(ant, nx, ny))
-                continue;
-            candidates.emplace_back(direction, nx, ny);
-        }
-    };
-    collect(allow_backtrack);
-    if (candidates.empty() && !allow_backtrack)
-        collect(true);
+    std::vector<std::tuple<int, int, int>> candidates = legal_move_candidates(ant);
     if (candidates.empty())
         return -1;
     if (ant.get_behavior() == Ant::Behavior::Randomized)
@@ -904,25 +917,7 @@ int Game::choose_ant_move_legacy(const Ant &ant) {
 
 int Game::choose_ant_move_enhanced(const Ant &ant) {
     ensure_enhanced_move_cache();
-    bool allow_backtrack = ant.get_behavior() == Ant::Behavior::Randomized ||
-                           ant.get_behavior() == Ant::Behavior::Bewitched;
-    std::vector<std::tuple<int, int, int>> candidates;
-    auto collect = [&](bool allow_reverse) {
-        candidates.clear();
-        for (int direction = 0; direction < 6; ++direction) {
-            int nx = ant.get_x() + ant_dx[ant.get_y() % 2][direction][0];
-            int ny = ant.get_y() + ant_dx[ant.get_y() % 2][direction][1];
-            if (!allow_reverse && ant.get_last_move() >= 0 &&
-                ant.get_last_move() == ((direction + 3) % 6))
-                continue;
-            if (!ant_can_target_cell(ant, nx, ny))
-                continue;
-            candidates.emplace_back(direction, nx, ny);
-        }
-    };
-    collect(allow_backtrack);
-    if (candidates.empty() && !allow_backtrack)
-        collect(true);
+    std::vector<std::tuple<int, int, int>> candidates = legal_move_candidates(ant);
     if (candidates.empty())
         return Ant::NoMove;
     if (ant.get_behavior() == Ant::Behavior::Randomized)
@@ -1164,6 +1159,18 @@ void Game::resolve_ant_step(Ant &ant, int move) {
     ant.move(move);
 }
 
+void Game::resolve_random_move_steps(Ant &ant, int steps) {
+    for (int step = 0; step < steps; ++step) {
+        auto status = ant.get_status();
+        if (status == Ant::Status::Fail || status == Ant::Status::TooOld)
+            break;
+        int move = random_index(3) < 2 ? choose_random_legal_move(ant)
+                                       : choose_ant_move(ant);
+        resolve_ant_step(ant, move);
+        invalidate_enhanced_move_cache();
+    }
+}
+
 void Game::teleport_ants() {
     if (ANT_TELEPORT_INTERVAL <= 0 || (round + 1) % ANT_TELEPORT_INTERVAL != 0)
         return;
@@ -1177,36 +1184,14 @@ void Game::teleport_ants() {
         return;
     int teleport_count =
         std::max(1, static_cast<int>(std::round(eligible.size() * ANT_TELEPORT_RATIO)));
+    std::vector<Ant *> chosen;
     while (!eligible.empty() && teleport_count-- > 0) {
         int ant_idx = random_index(static_cast<int>(eligible.size()));
-        Ant *ant = eligible[ant_idx];
+        chosen.push_back(eligible[ant_idx]);
         eligible.erase(eligible.begin() + ant_idx);
-        std::vector<std::pair<int, int>> cells;
-        Pos own = ant->get_player() ? Pos(PLAYER_1_BASE_CAMP_X, PLAYER_1_BASE_CAMP_Y)
-                                    : Pos(PLAYER_0_BASE_CAMP_X, PLAYER_0_BASE_CAMP_Y);
-        Pos enemy = ant->get_player() ? Pos(PLAYER_0_BASE_CAMP_X, PLAYER_0_BASE_CAMP_Y)
-                                      : Pos(PLAYER_1_BASE_CAMP_X, PLAYER_1_BASE_CAMP_Y);
-        if (ant_in_own_half(*ant)) {
-            for (int x = 0; x < MAP_SIZE; ++x)
-                for (int y = 0; y < MAP_SIZE; ++y)
-                    if (ant_can_walk_to(x, y) &&
-                        !(x == PLAYER_0_BASE_CAMP_X && y == PLAYER_0_BASE_CAMP_Y) &&
-                        !(x == PLAYER_1_BASE_CAMP_X && y == PLAYER_1_BASE_CAMP_Y) &&
-                        distance(Pos(x, y), own) <= distance(Pos(x, y), enemy))
-                        cells.emplace_back(x, y);
-        } else {
-            for (int x = 0; x < MAP_SIZE; ++x)
-                for (int y = 0; y < MAP_SIZE; ++y)
-                    if (ant_can_walk_to(x, y) &&
-                        !(x == PLAYER_0_BASE_CAMP_X && y == PLAYER_0_BASE_CAMP_Y) &&
-                        !(x == PLAYER_1_BASE_CAMP_X && y == PLAYER_1_BASE_CAMP_Y))
-                        cells.emplace_back(x, y);
-        }
-        if (cells.empty())
-            continue;
-        auto cell = cells[random_index(static_cast<int>(cells.size()))];
-        ant->teleport_to(cell.first, cell.second);
     }
+    for (Ant *ant : chosen)
+        resolve_random_move_steps(*ant, 3);
 }
 
 void Game::drift_items() {
