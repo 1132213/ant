@@ -37,7 +37,14 @@ def default_behavior_expiry(behavior: AntBehavior) -> int:
     return 0
 
 
-@dataclass(slots=True)
+import sys
+
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class Operation:
     op_type: OperationType
     arg0: int = -1
@@ -59,7 +66,7 @@ class Operation:
         return [int(self.op_type)]
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class Ant:
     ant_id: int
     player: int
@@ -239,7 +246,7 @@ class Ant:
         self.refresh_status()
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class Tower:
     tower_id: int
     player: int
@@ -349,7 +356,7 @@ class Tower:
         return max(int(self.cooldown_clock), 0)
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class Base:
     player: int
     x: int
@@ -386,7 +393,7 @@ class Base:
         )
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class WeaponEffect:
     weapon_type: SuperWeaponType
     player: int

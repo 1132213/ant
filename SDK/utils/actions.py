@@ -26,7 +26,13 @@ from SDK.backend.state import BackendState
 from SDK.backend.model import Operation, Tower
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class ActionBundle:
     name: str
     operations: tuple[Operation, ...] = ()
@@ -149,7 +155,7 @@ class ActionCatalog:
         my_ants = state.ants_of(player)
         enemy_towers = state.towers_of(enemy)
 
-        if (enemy_ants or enemy_towers) and state.weapon_cooldowns[player, SuperWeaponType.LIGHTNING_STORM] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cost:
+        if enemy_ants and state.weapon_cooldowns[player, SuperWeaponType.LIGHTNING_STORM.value - 1] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.LIGHTNING_STORM].cost:
             centers = {(ant.x, ant.y) for ant in enemy_ants}
             centers.update((tower.x, tower.y) for tower in enemy_towers)
             best = max(
@@ -162,7 +168,7 @@ class ActionCatalog:
                 if state.can_apply_operation(player, op):
                     results.append(ActionBundle(f"storm@{best[0]},{best[1]}", (op,), best[2], ("weapon", "storm")))
 
-        if enemy_towers and state.weapon_cooldowns[player, SuperWeaponType.EMP_BLASTER] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.EMP_BLASTER].cost:
+        if enemy_towers and state.weapon_cooldowns[player, SuperWeaponType.EMP_BLASTER.value - 1] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.EMP_BLASTER].cost:
             centers = {(tower.x, tower.y) for tower in enemy_towers}
             scored = [
                 (x, y, self._emp_value(state, player, x, y))
@@ -174,7 +180,7 @@ class ActionCatalog:
                 if state.can_apply_operation(player, op):
                     results.append(ActionBundle(f"emp@{best[0]},{best[1]}", (op,), best[2], ("weapon", "emp")))
 
-        if my_ants and state.weapon_cooldowns[player, SuperWeaponType.DEFLECTOR] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.DEFLECTOR].cost:
+        if my_ants and state.weapon_cooldowns[player, SuperWeaponType.DEFLECTOR.value - 1] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.DEFLECTOR].cost:
             best = max(
                 ((ant.x, ant.y, self._deflector_value(state, player, ant.x, ant.y)) for ant in my_ants),
                 key=lambda item: item[2],
@@ -185,7 +191,7 @@ class ActionCatalog:
                 if state.can_apply_operation(player, op):
                     results.append(ActionBundle(f"deflect@{best[0]},{best[1]}", (op,), best[2], ("weapon", "shield")))
 
-        if my_ants and state.weapon_cooldowns[player, SuperWeaponType.EMERGENCY_EVASION] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.EMERGENCY_EVASION].cost:
+        if my_ants and state.weapon_cooldowns[player, SuperWeaponType.EMERGENCY_EVASION.value - 1] == 0 and state.coins[player] >= SUPER_WEAPON_STATS[SuperWeaponType.EMERGENCY_EVASION].cost:
             best = max(
                 ((ant.x, ant.y, self._evasion_value(state, player, ant.x, ant.y)) for ant in my_ants),
                 key=lambda item: item[2],

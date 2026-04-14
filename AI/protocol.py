@@ -18,7 +18,14 @@ from SDK.backend.model import Operation
 from SDK.utils.constants import OperationType
 
 
-@dataclass(slots=True)
+import sys
+
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class ProtocolController:
     runtime: MatchRuntime
     agent: BaseAgent

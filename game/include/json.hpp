@@ -18707,7 +18707,14 @@ class serializer
         auto* end = ::nlohmann::detail::to_chars(begin, begin + number_buffer.size(), x);
         // Set precision for double
         o->write_characters(begin, static_cast<size_t>(end - begin));
-        int inter = end - std::find(number_buffer.begin(), number_buffer.end(), '.') - 1;
+        
+        auto dot_pos = std::find(number_buffer.begin(), number_buffer.begin() + (end - begin), '.');
+        int inter = 0;
+        if (dot_pos != number_buffer.begin() + (end - begin)) {
+            inter = std::distance(dot_pos, number_buffer.begin() + (end - begin)) - 1;
+        } else {
+            o->write_characters(".", 1);
+        }
         for (int i = 0; i < 4 - inter; i++) {
             o->write_characters("0", 1);
         }

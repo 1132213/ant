@@ -72,7 +72,14 @@ def _trail_for_pheromone(ant: Ant) -> List[tuple[int, int]]:
     return trail
 
 
-@dataclass(slots=True)
+import sys
+
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class Ant:
     id: int
     player: int
@@ -150,7 +157,7 @@ class Ant:
         )
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class Tower:
     id: int
     player: int
@@ -275,7 +282,7 @@ class Tower:
         return self.type != TowerType.BASIC
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class Base:
     player: int
     x: int
@@ -305,7 +312,7 @@ class Base:
         self.ant_level += 1
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class SuperWeapon:
     type: SuperWeaponType
     player: int
@@ -329,7 +336,7 @@ class SuperWeapon:
         return copied
 
 
-@dataclass(slots=True, frozen=True)
+@compat_dataclass(slots=True, frozen=True)
 class Operation:
     type: OperationType
     arg0: int = -1

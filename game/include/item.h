@@ -13,9 +13,9 @@ int get_item_cd(ItemType type);
 int get_item_time(ItemType type);
 
 struct Item {
-    // 武器cd
+    // Weapon cd
     int cd;
-    // 武器持续时间
+    // Weapon duration
     int duration;
     int x, y;
     Item(int _cd, int _duration, int _x, int _y): cd(_cd), duration(_duration), x(_x), y(_y) {

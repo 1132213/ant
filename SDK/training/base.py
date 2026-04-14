@@ -9,7 +9,13 @@ from SDK.utils.features import FeatureExtractor
 from SDK.training.env import AntWarParallelEnv
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class TrajectoryStep:
     observation: np.ndarray
     mask: np.ndarray
@@ -18,7 +24,13 @@ class TrajectoryStep:
     done: bool
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class EpisodeBatch:
     observations: np.ndarray
     masks: np.ndarray

@@ -7,7 +7,13 @@ import random
 import numpy as np
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class PolicyStep:
     action: int
     probability: float

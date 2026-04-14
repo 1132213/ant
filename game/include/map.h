@@ -40,9 +40,9 @@ using multi_dim_array_t =
     typename multi_dim_array<T, N, Args...>::type; // Get your array type!
 
 struct point {
-    // 蚂蚁不可走区域
+    // invalid area for ant
     bool valid = false;
-    // 建塔区域
+    // buildable area for player
     int player = -1;
     // 
     DefenseTower *tower = nullptr;

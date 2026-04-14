@@ -18,10 +18,17 @@ from SDK.utils.actions import ActionCatalog
 from SDK.utils.features import FeatureExtractor
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class AlphaZeroTrainerConfig:
     batches: int = 1
     episodes: int = 4
+    workers: int = 4
     learning_rate: float = 1e-3
     value_weight: float = 1.0
     l2_weight: float = 1e-5
@@ -44,10 +51,18 @@ class AlphaZeroTrainerConfig:
     hidden_dim2: int = 64
     checkpoint_path: str = "checkpoints/ai_mcts_latest.npz"
     resume_from: str | None = None
+    start_batch: int = 0
     evaluation_episodes: int = 2
+    save_interval: int = 1
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class SelfPlaySample:
     observation: np.ndarray
     mask: np.ndarray
@@ -55,7 +70,13 @@ class SelfPlaySample:
     value: float
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class SelfPlayBatch:
     observations: np.ndarray
     masks: np.ndarray
@@ -63,7 +84,13 @@ class SelfPlayBatch:
     values: np.ndarray
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class EpisodeSummary:
     seed: int
     rounds: int
@@ -290,8 +317,14 @@ class AlphaZeroSelfPlayTrainer:
             "eval_avg_rounds": float(total_rounds / games),
         }
 
-    def save_checkpoint(self) -> str:
+    def save_checkpoint(self, batch_index: int = -1) -> str:
         self.model.save(self.config.checkpoint_path)
+        
+        # Save a numbered checkpoint every save_interval batches
+        if batch_index >= 0 and self.config.save_interval > 0 and batch_index % self.config.save_interval == 0:
+            numbered_path = self.config.checkpoint_path.replace(".npz", f"_{batch_index:04d}.npz")
+            self.model.save(numbered_path)
+            
         return str(Path(self.config.checkpoint_path))
 
     def train(self, num_batches: int | None = None) -> tuple[list[dict[str, float]], list[EpisodeSummary]]:
@@ -313,7 +346,7 @@ class AlphaZeroSelfPlayTrainer:
             metrics["batch"] = float(batch_index)
             metrics["episodes"] = float(self.config.episodes)
             metrics["checkpoint_saved"] = 1.0
-            checkpoint_path = self.save_checkpoint()
+            checkpoint_path = self.save_checkpoint(batch_index=batch_index)
             metrics.update(self.evaluate_against_heuristic())
             history.append(metrics)
             samples.extend(episode_summaries)

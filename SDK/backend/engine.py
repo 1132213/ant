@@ -135,40 +135,26 @@ def _is_ant_walkable_cell(x: int, y: int) -> bool:
     return (x, y) in PLAYER_BASES or is_path(x, y)
 
 
-@dataclass(slots=True)
-class PublicRoundState:
-    round_index: int
-    towers: list[tuple[int, ...]]
-    ants: list[tuple[int, ...]]
-    coins: tuple[int, int]
-    camps_hp: tuple[int, int]
-    speed_lv: tuple[int, int] | None = None
-    anthp_lv: tuple[int, int] | None = None
-    weapon_cooldowns: tuple[tuple[int, ...], ...] | None = None
-    active_effects: list[tuple[int, ...]] | None = None
+import sys
 
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
 
-@dataclass(slots=True)
-class TurnResolution:
-    operations: tuple[list[Operation], list[Operation]]
-    illegal: tuple[list[Operation], list[Operation]]
-    terminal: bool
-    winner: int | None
-
-
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class EnhancedTowerPlan:
     total_cost: np.ndarray
     damage_cost: np.ndarray
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class EnhancedMoveAnnotation:
     next_cell: tuple[int, int] | None = None
     tower_id: int | None = None
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class GameState:
     seed: int = 0
     movement_policy: str = DEFAULT_MOVEMENT_POLICY

@@ -4,8 +4,16 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import random
+import sys
 
 import numpy as np
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    import torch.nn.functional as F
+except ImportError:
+    pass
 
 from SDK.backend import create_python_backend_state
 from SDK.backend.state import BackendState
@@ -66,14 +74,26 @@ def _terminal_value(state: BackendState, player: int) -> float | None:
     return 1.0 if state.winner == player else -1.0
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class PolicyValueNetConfig:
     hidden_dim: int = 128
     hidden_dim2: int = 64
     seed: int = 0
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class PolicyValueInference:
     priors: np.ndarray
     value: float
@@ -81,7 +101,13 @@ class PolicyValueInference:
     mask: np.ndarray
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class SearchConfig:
     iterations: int = 64
     max_depth: int = 4
@@ -96,7 +122,13 @@ class SearchConfig:
     seed: int = 0
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class SearchResult:
     action_index: int
     bundle: ActionBundle
@@ -106,7 +138,13 @@ class SearchResult:
     priors: np.ndarray
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class SearchNode:
     state: BackendState
     player: int
@@ -128,6 +166,22 @@ class SearchNode:
         return self.value_sum / self.visits
 
 
+class TorchPolicyValueNet(nn.Module):
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int, hidden_dim2: int):
+        super().__init__()
+        self.fc1 = nn.Linear(obs_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim2)
+        self.policy_head = nn.Linear(hidden_dim2, action_dim)
+        self.value_head = nn.Linear(hidden_dim2, 1)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        logits = self.policy_head(x)
+        value = torch.tanh(self.value_head(x))
+        return logits, value
+
+
 class PolicyValueNet:
     def __init__(
         self,
@@ -138,19 +192,33 @@ class PolicyValueNet:
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.config = config or PolicyValueNetConfig()
-        rng = np.random.default_rng(self.config.seed)
-        scale1 = 1.0 / math.sqrt(max(obs_dim, 1))
-        scale2 = 1.0 / math.sqrt(max(self.config.hidden_dim, 1))
-        scale3 = 1.0 / math.sqrt(max(self.config.hidden_dim2, 1))
-        self.w1 = rng.normal(0.0, scale1, size=(obs_dim, self.config.hidden_dim)).astype(np.float32)
-        self.b1 = np.zeros(self.config.hidden_dim, dtype=np.float32)
-        self.w2 = rng.normal(0.0, scale2, size=(self.config.hidden_dim, self.config.hidden_dim2)).astype(np.float32)
-        self.b2 = np.zeros(self.config.hidden_dim2, dtype=np.float32)
-        self.policy_w = rng.normal(0.0, scale3, size=(self.config.hidden_dim2, action_dim)).astype(np.float32)
-        self.policy_b = np.zeros(action_dim, dtype=np.float32)
-        self.value_w = rng.normal(0.0, scale3, size=(self.config.hidden_dim2, 1)).astype(np.float32)
-        self.value_b = np.zeros(1, dtype=np.float32)
+        
+        if "torch" not in sys.modules:
+            raise ImportError("PyTorch is required for the GPU version of AlphaZero. Please install PyTorch first.")
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        self.model = TorchPolicyValueNet(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_dim=self.config.hidden_dim,
+            hidden_dim2=self.config.hidden_dim2,
+        )
+        
+        # GPU / Multi-GPU 支持
+        if torch.cuda.device_count() > 1:
+            self.model = nn.DataParallel(self.model)
+            
+        self.model = self.model.to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3, weight_decay=1e-5)
         self.loaded_from: str | None = None
+        
+        import threading
+        self._predict_lock = threading.Lock()
+        
+        # 预分配推理专用的 Tensor Buffer，避免 MCTS 中频繁的内存分配与释放
+        self._obs_buffer = torch.zeros((1, obs_dim), dtype=torch.float32, device=self.device)
+        self._mask_buffer = torch.zeros((action_dim,), dtype=torch.float32, device=self.device)
 
     @classmethod
     def from_checkpoint(cls, path: str | Path) -> PolicyValueNet:
@@ -161,20 +229,27 @@ class PolicyValueNet:
             seed=int(checkpoint["seed"]),
         )
         network = cls(obs_dim=int(checkpoint["obs_dim"]), action_dim=int(checkpoint["action_dim"]), config=config)
-        network.w1 = checkpoint["w1"].astype(np.float32, copy=True)
-        network.b1 = checkpoint["b1"].astype(np.float32, copy=True)
-        network.w2 = checkpoint["w2"].astype(np.float32, copy=True)
-        network.b2 = checkpoint["b2"].astype(np.float32, copy=True)
-        network.policy_w = checkpoint["policy_w"].astype(np.float32, copy=True)
-        network.policy_b = checkpoint["policy_b"].astype(np.float32, copy=True)
-        network.value_w = checkpoint["value_w"].astype(np.float32, copy=True)
-        network.value_b = checkpoint["value_b"].astype(np.float32, copy=True)
+        
+        base_model = network.model.module if isinstance(network.model, nn.DataParallel) else network.model
+        
+        with torch.no_grad():
+            base_model.fc1.weight.copy_(torch.from_numpy(checkpoint["w1"].T))
+            base_model.fc1.bias.copy_(torch.from_numpy(checkpoint["b1"]))
+            base_model.fc2.weight.copy_(torch.from_numpy(checkpoint["w2"].T))
+            base_model.fc2.bias.copy_(torch.from_numpy(checkpoint["b2"]))
+            base_model.policy_head.weight.copy_(torch.from_numpy(checkpoint["policy_w"].T))
+            base_model.policy_head.bias.copy_(torch.from_numpy(checkpoint["policy_b"]))
+            base_model.value_head.weight.copy_(torch.from_numpy(checkpoint["value_w"].T))
+            base_model.value_head.bias.copy_(torch.from_numpy(checkpoint["value_b"]))
+            
         network.loaded_from = str(Path(path))
         return network
 
     def save(self, path: str | Path) -> None:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        base_model = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+        
         np.savez(
             target,
             obs_dim=np.int64(self.obs_dim),
@@ -182,35 +257,42 @@ class PolicyValueNet:
             hidden_dim=np.int64(self.config.hidden_dim),
             hidden_dim2=np.int64(self.config.hidden_dim2),
             seed=np.int64(self.config.seed),
-            w1=self.w1,
-            b1=self.b1,
-            w2=self.w2,
-            b2=self.b2,
-            policy_w=self.policy_w,
-            policy_b=self.policy_b,
-            value_w=self.value_w,
-            value_b=self.value_b,
+            w1=base_model.fc1.weight.detach().cpu().numpy().T,
+            b1=base_model.fc1.bias.detach().cpu().numpy(),
+            w2=base_model.fc2.weight.detach().cpu().numpy().T,
+            b2=base_model.fc2.bias.detach().cpu().numpy(),
+            policy_w=base_model.policy_head.weight.detach().cpu().numpy().T,
+            policy_b=base_model.policy_head.bias.detach().cpu().numpy(),
+            value_w=base_model.value_head.weight.detach().cpu().numpy().T,
+            value_b=base_model.value_head.bias.detach().cpu().numpy(),
         )
         self.loaded_from = str(target)
 
-    def _forward(
-        self,
-        observations: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        hidden1_pre = observations @ self.w1 + self.b1
-        hidden1 = _relu(hidden1_pre)
-        hidden2_pre = hidden1 @ self.w2 + self.b2
-        hidden2 = _relu(hidden2_pre)
-        logits = hidden2 @ self.policy_w + self.policy_b
-        raw_values = hidden2 @ self.value_w + self.value_b
-        values = np.tanh(raw_values).astype(np.float32, copy=False)
-        return hidden1_pre, hidden1, hidden2_pre, hidden2, logits.astype(np.float32, copy=False), values.astype(np.float32, copy=False)
-
     def predict(self, observation: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, float]:
-        batch = observation.astype(np.float32, copy=False)[None, :]
-        _, _, _, _, logits, values = self._forward(batch)
-        priors = _masked_softmax(logits[0], mask.astype(np.float32, copy=False))
-        return priors, float(values[0, 0])
+        self.model.eval()
+        # 使用 inference_mode 替代 no_grad，进一步降低底层开销
+        with torch.inference_mode(), self._predict_lock:
+            # 使用 non_blocking 拷贝到预分配的 Buffer 中，避免新建 Tensor
+            self._obs_buffer.copy_(torch.from_numpy(observation.astype(np.float32)), non_blocking=True)
+            self._mask_buffer.copy_(torch.from_numpy(mask.astype(np.float32)), non_blocking=True)
+            
+            logits, values = self.model(self._obs_buffer)
+            logits = logits.squeeze(0)
+            
+            masked_logits = logits.clone()
+            masked_logits[self._mask_buffer <= 0] = -1e9
+            
+            masked_logits = masked_logits - torch.max(masked_logits)
+            exp_logits = torch.exp(masked_logits) * self._mask_buffer
+            denom = torch.sum(exp_logits)
+            
+            if denom <= 0:
+                priors = torch.zeros_like(logits)
+                priors[0] = 1.0
+            else:
+                priors = exp_logits / denom
+                
+            return priors.cpu().numpy(), float(values.item())
 
     def update(
         self,
@@ -222,66 +304,47 @@ class PolicyValueNet:
         value_weight: float = 1.0,
         l2_weight: float = 1e-5,
     ) -> dict[str, float]:
-        batch_size = max(len(observations), 1)
-        obs = observations.astype(np.float32, copy=False)
-        mask = masks.astype(np.float32, copy=False)
-        target_policy = policy_targets.astype(np.float32, copy=False)
-        target_value = value_targets.astype(np.float32, copy=False).reshape(-1, 1)
+        self.model.train()
+        
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = learning_rate
+            param_group['weight_decay'] = l2_weight
 
-        hidden1_pre, hidden1, hidden2_pre, hidden2, logits, values = self._forward(obs)
-        masked_logits = logits.astype(np.float32, copy=True)
-        masked_logits[mask <= 0] = -1e9
-        masked_logits -= np.max(masked_logits, axis=1, keepdims=True)
-        exp = np.exp(masked_logits).astype(np.float32, copy=False) * mask
-        denom = np.sum(exp, axis=1, keepdims=True)
+        obs_tensor = torch.from_numpy(observations.astype(np.float32)).to(self.device)
+        mask_tensor = torch.from_numpy(masks.astype(np.float32)).to(self.device)
+        policy_targets_tensor = torch.from_numpy(policy_targets.astype(np.float32)).to(self.device)
+        value_targets_tensor = torch.from_numpy(value_targets.astype(np.float32)).unsqueeze(1).to(self.device)
+
+        self.optimizer.zero_grad()
+        logits, values = self.model(obs_tensor)
+        
+        value_loss = F.mse_loss(values, value_targets_tensor)
+        
+        masked_logits = logits.clone()
+        masked_logits[mask_tensor <= 0] = -1e9
+        
+        policy_targets_tensor = policy_targets_tensor * mask_tensor
+        denom = torch.sum(policy_targets_tensor, dim=1, keepdim=True)
         denom[denom <= 0] = 1.0
-        probs = exp / denom
-
-        target_policy = target_policy * mask
-        policy_denominator = np.sum(target_policy, axis=1, keepdims=True)
-        policy_denominator[policy_denominator <= 0] = 1.0
-        target_policy = target_policy / policy_denominator
-
-        safe_probs = np.clip(probs, 1e-8, 1.0)
-        policy_loss = -np.sum(target_policy * np.log(safe_probs), axis=1).mean()
-        value_error = values - target_value
-        value_loss = float(np.mean(value_error ** 2))
-        entropy = float(-np.mean(np.sum(np.where(probs > 0, probs * np.log(safe_probs), 0.0), axis=1)))
-
-        grad_logits = (probs - target_policy) / batch_size
-        grad_logits *= mask
-        grad_policy_w = hidden2.T @ grad_logits + l2_weight * self.policy_w
-        grad_policy_b = np.sum(grad_logits, axis=0)
-
-        grad_raw_values = (2.0 * value_weight / batch_size) * value_error * (1.0 - values ** 2)
-        grad_value_w = hidden2.T @ grad_raw_values + l2_weight * self.value_w
-        grad_value_b = np.sum(grad_raw_values, axis=0)
-
-        grad_hidden2 = grad_logits @ self.policy_w.T + grad_raw_values @ self.value_w.T
-        grad_hidden2[hidden2_pre <= 0] = 0.0
-        grad_w2 = hidden1.T @ grad_hidden2 + l2_weight * self.w2
-        grad_b2 = np.sum(grad_hidden2, axis=0)
-
-        grad_hidden1 = grad_hidden2 @ self.w2.T
-        grad_hidden1[hidden1_pre <= 0] = 0.0
-        grad_w1 = obs.T @ grad_hidden1 + l2_weight * self.w1
-        grad_b1 = np.sum(grad_hidden1, axis=0)
-
-        self.policy_w -= learning_rate * grad_policy_w.astype(np.float32)
-        self.policy_b -= learning_rate * grad_policy_b.astype(np.float32)
-        self.value_w -= learning_rate * grad_value_w.astype(np.float32)
-        self.value_b -= learning_rate * grad_value_b.astype(np.float32)
-        self.w2 -= learning_rate * grad_w2.astype(np.float32)
-        self.b2 -= learning_rate * grad_b2.astype(np.float32)
-        self.w1 -= learning_rate * grad_w1.astype(np.float32)
-        self.b1 -= learning_rate * grad_b1.astype(np.float32)
-
+        policy_targets_tensor = policy_targets_tensor / denom
+        
+        log_probs = F.log_softmax(masked_logits, dim=1)
+        policy_loss = -torch.sum(policy_targets_tensor * log_probs, dim=1).mean()
+        
+        loss = policy_loss + value_weight * value_loss
+        loss.backward()
+        self.optimizer.step()
+        
+        with torch.no_grad():
+            probs = torch.exp(log_probs) * mask_tensor
+            entropy = -torch.sum(probs * log_probs, dim=1).mean().item()
+        
         return {
-            "policy_loss": float(policy_loss),
-            "value_loss": value_loss,
-            "entropy": entropy,
-            "mean_value_target": float(np.mean(target_value)),
-            "mean_prediction": float(np.mean(values)),
+            "policy_loss": float(policy_loss.item()),
+            "value_loss": float(value_loss.item()),
+            "entropy": float(entropy),
+            "mean_value_target": float(value_targets_tensor.mean().item()),
+            "mean_prediction": float(values.mean().item()),
         }
 
 
@@ -403,14 +466,32 @@ class PriorGuidedMCTS:
             node.priors[: len(action_bundles)] = prior_slice
 
         limit = self.search_config.root_action_limit if node.depth == 0 else self.search_config.child_action_limit
+
+        # Predict enemy action using fast heuristic instead of assuming hold
+        enemy_player = 1 - node.player
+        try:
+            import sys
+            import os
+            # Add AI folder to path so we can import custom_utils
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            ai_path = os.path.join(repo_root, "AI")
+            if ai_path not in sys.path:
+                sys.path.insert(0, ai_path)
+            from custom_utils import get_fast_heuristic_enemy_action
+            enemy_action_name, enemy_ops = get_fast_heuristic_enemy_action(node.state, enemy_player)
+            enemy_bundle = ActionBundle(name=enemy_action_name, score=0.0, tags=("predicted",), operations=enemy_ops)
+        except ImportError:
+            enemy_bundle = ActionBundle(name="hold", score=0.0, tags=("noop",))
+
         for action_index in self._branch_indices(node.priors, action_bundles, limit):
             child_state = node.state.clone()
             bundle = action_bundles[action_index]
-            enemy_bundle = self._predict_enemy_bundle(child_state, node.player)
+            
             if node.player == 0:
                 child_state.resolve_turn(bundle.operations, enemy_bundle.operations)
             else:
                 child_state.resolve_turn(enemy_bundle.operations, bundle.operations)
+                
             node.children.append(
                 SearchNode(
                     state=child_state,
@@ -521,3 +602,18 @@ def build_policy_value_net(
     observation = feature_extractor.encode_observation(state, 0, mask)
     obs_dim = len(feature_extractor.flatten_observation(observation))
     return PolicyValueNet(obs_dim=obs_dim, action_dim=action_dim, config=config)
+
+
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
+class AlphaZeroTrainerConfig:
+    batches: int = 1
+    episodes: int = 4
+    workers: int = 4
+    learning_rate: float = 1e-3
+    value_weight: float = 1.0

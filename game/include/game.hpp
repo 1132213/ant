@@ -95,8 +95,6 @@ class Game {
     void update_items();      // update duration of item
     void update_coin();      // update coin by basic income and penalty
     void update_pheromone(); // update pheromone for each ant
-    bool judge_base_camp();  // judge winner by base_camps' hp
-    void judge_winner(); // judge winner when round is no less than 512
     unsigned long long next_random();
     double random_float();
     int random_index(int bound);
@@ -162,10 +160,12 @@ class Game {
     void init();
     bool is_ended();
     bool next_round();
+    bool judge_base_camp();  // judge winner by base_camps' hp
+    void judge_winner(); // judge winner when round is no less than 512
 
     // bool is_operation_valid(const OperationSet& op) const;
     bool apply_operation(const std::vector<Operation> &op_list,
-                         int player, std::string& err_msg); // 进行选手在回合的操作
+                         int player, std::string& err_msg); // apply operations
     void dump_round_state(/* const std::string& filename */);
     void
     dump_last_round(/* const std::string& filename */ const std::string &msg);

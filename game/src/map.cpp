@@ -35,7 +35,7 @@ bool Map::is_valid(int x, int y) const {
 
 const int map_L = SIDE_LENGTH;
 Map::Map() {
-    // 设置形状
+    // Set shape
     int k = 2 * map_L - 1;
     for (int i = map_L - 1; i >= 0; i--) {
         for (int j = 0; j < k; j++)
@@ -79,7 +79,7 @@ Map::Map() {
     for (auto block : valid_blocks) {
         map[block[0]][block[1]].valid = false;
     }
-    // 划分player领地
+    // Set player territory
     std::vector<std::vector<int>> tower_blocks = 
     {
         {6, 1}, {7, 1}, {4, 2}, {6, 2}, 
@@ -111,7 +111,7 @@ Map::Map() {
         map[block[0]][block[1]].player = 1;
     }
 
-    // 初始化信息素
+    // Init pheromone
     // for(int i = 0; i < 2; i++)
     //     for(int j = 0; j < MAP_SIZE; j++)
     //         for(int k = 0; k < MAP_SIZE; k++)

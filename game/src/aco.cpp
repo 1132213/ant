@@ -12,7 +12,7 @@ const int Q1_INT = 100000;   // +10
 const int Q2_INT = -50000;   // -5
 const int Q3_INT = -30000;   // -3
 
-// y 为奇偶时方向不同
+// Different directions when y is odd/even
 const int d[2][6][2] = {{{0, 1}, {-1, 0}, {0, -1}, {1, -1}, {1, 0}, {1, 1}},
                         {{-1, 1}, {-1, 0}, {-1, -1}, {0, -1}, {1, 0}, {0, 1}}};
 
@@ -35,7 +35,7 @@ int eta_scaled(int _x, int _y, int x, int y, Pos des) {
 //     int player = ant->get_player();
 //     int x = ant->get_x();
 //     int y = ant->get_y();
-//     // 移动信息素变化
+//     // Move pheromone change
 //     if (mov != -1) {
 //         map[x][y].pheromone[player][mov] += (double)Q0 / L_k;
 //         x = x + d[y % 2][mov][0];
@@ -48,8 +48,8 @@ int eta_scaled(int _x, int _y, int x, int y, Pos des) {
 // update pheromone
 void Map::update_pheromone(Ant *ant) {
     int player = ant->get_player();
-    // 如果到达大本营, 更新全局信息素
-    // 如果hp <= 0 或已经走了很长距离, 判定死亡,更新全局信息素并返回
+    // Update global pheromone if reaching base
+    // Or if died/too old
     int Q = 0;
     if (ant->get_status() == Ant::Status::Success) {
         Q = Q1_INT;

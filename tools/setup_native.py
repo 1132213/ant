@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import setup
@@ -20,6 +21,7 @@ ext_modules = [
             str(REPO_ROOT),
             str(REPO_ROOT / "game" / "include"),
         ],
+        extra_compile_args=['/utf-8'] if sys.platform == 'win32' else [],
         cxx_std=17,
     )
 ]

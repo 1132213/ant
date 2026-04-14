@@ -13,7 +13,14 @@ class EngineBackend(Protocol):
     def initial_state(self, seed: int = 0, movement_policy: str = DEFAULT_MOVEMENT_POLICY) -> BackendState: ...
 
 
-@dataclass(slots=True)
+import sys
+
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class PythonBackend:
     name: str = "python"
 
@@ -25,7 +32,7 @@ class NativeBackendUnavailable(RuntimeError):
     pass
 
 
-@dataclass(slots=True)
+@compat_dataclass(slots=True)
 class NativeBackend:
     module: object
     name: str = "native"

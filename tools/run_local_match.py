@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
+import queue
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,25 +33,72 @@ def packet(payload: object) -> bytes:
     return struct.pack(">I", len(body)) + body
 
 
+def _enqueue_output(stream, q, stop_event):
+    try:
+        while not stop_event.is_set():
+            # Read block of bytes
+            b = stream.read(1024)
+            if b:
+                for byte in b:
+                    q.put(bytes([byte]))
+            else:
+                break
+    except Exception:
+        pass
+    finally:
+        q.put(None) # EOF marker
+
 def read_exact(stream, size: int, proc: subprocess.Popen[bytes], label: str,
                timeout: float = TIMEOUT_SECONDS) -> bytes:
-    fd = stream.fileno()
     data = bytearray()
     deadline = time.monotonic() + timeout
-    while len(data) < size:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(f"timed out while reading {label}")
-        ready, _, _ = select.select([fd], [], [], remaining)
-        if not ready:
-            continue
-        chunk = os.read(fd, size - len(data))
-        if not chunk:
-            code = proc.poll()
-            if code is None:
-                raise EOFError(f"unexpected EOF while reading {label}")
-            raise EOFError(f"{label} closed with exit code {code}")
-        data.extend(chunk)
+    
+    if os.name == 'nt':
+        # Create a thread to read from the stream to avoid blocking
+        if not hasattr(stream, '_reader_thread'):
+            stream._queue = queue.Queue()
+            stream._stop_event = threading.Event()
+            stream._reader_thread = threading.Thread(
+                target=_enqueue_output, 
+                args=(stream, stream._queue, stream._stop_event),
+                daemon=True
+            )
+            stream._reader_thread.start()
+            
+        while len(data) < size:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"timed out while reading {label}")
+                
+            try:
+                # Block with a short timeout to be responsive to the overall deadline
+                b = stream._queue.get(timeout=min(0.1, remaining))
+                if b is None: # EOF
+                    code = proc.poll()
+                    if code is None:
+                        raise EOFError(f"unexpected EOF while reading {label}")
+                    raise EOFError(f"{label} closed with exit code {code}")
+                data.extend(b)
+            except queue.Empty:
+                pass
+                
+    else:
+        fd = stream.fileno()
+        while len(data) < size:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"timed out while reading {label}")
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                continue
+            chunk = os.read(fd, size - len(data))
+            if not chunk:
+                code = proc.poll()
+                if code is None:
+                    raise EOFError(f"unexpected EOF while reading {label}")
+                raise EOFError(f"{label} closed with exit code {code}")
+            data.extend(chunk)
+            
     return bytes(data)
 
 
@@ -74,18 +123,21 @@ def write_all(stream, payload: bytes) -> None:
 def stage_ai(target: str, parent: Path, label: str) -> Path:
     output_dir = parent / f"{label}-{target}"
     output_dir.mkdir(parents=True, exist_ok=False)
-    subprocess.run([str(PACKAGE_AI), target, str(output_dir)], cwd=REPO_ROOT, check=True)
+    # 使用纯 Python 版本的打包脚本，避免跨平台路径问题
+    package_script = REPO_ROOT / "AI" / "package_ai.py"
+    subprocess.run([sys.executable, str(package_script), target, str(output_dir)], cwd=REPO_ROOT, check=True)
     return output_dir
 
 
 def launch_ai(ai_dir: Path, stderr_path: Path) -> subprocess.Popen[bytes]:
     stderr_handle = stderr_path.open("wb")
     return subprocess.Popen(
-        [sys.executable, "main.py"],
+        [sys.executable, "-u", "main.py"],
         cwd=ai_dir,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=stderr_handle,
+        bufsize=0,
     )
 
 
@@ -117,8 +169,8 @@ def read_text(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a full local game<->AI<->judger match")
-    parser.add_argument("--ai0", default="greedy", choices=["random", "mcts", "greedy"])
-    parser.add_argument("--ai1", default="greedy", choices=["random", "mcts", "greedy"])
+    parser.add_argument("--ai0", default="greedy", choices=["random", "mcts", "greedy", "custom", "example", "mcts_custom", "alphazero"])
+    parser.add_argument("--ai1", default="greedy", choices=["random", "mcts", "greedy", "custom", "example", "mcts_custom", "alphazero"])
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--keep-dir", type=Path, default=None,
                         help="Keep packaged AIs, replay, and stderr logs in this directory")
@@ -182,6 +234,7 @@ def main() -> int:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=game_stderr_handle,
+            bufsize=0,
         )
 
         init = {
@@ -223,6 +276,8 @@ def main() -> int:
                 result["end_info"] = message.get("end_info")
                 break
 
+        # Let the game engine know we're done so it can dump the replay
+        close_stdin(game)
         game.wait(timeout=3)
         close_stdin(ai0)
         close_stdin(ai1)

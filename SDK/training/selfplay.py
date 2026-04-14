@@ -7,7 +7,13 @@ from SDK.training.base import BaseSelfPlayTrainer, EpisodeBatch
 from SDK.training.policies import MaskedLinearPolicy
 
 
-@dataclass(slots=True)
+import sys
+def compat_dataclass(**kwargs):
+    if sys.version_info < (3, 10) and 'slots' in kwargs:
+        del kwargs['slots']
+    return dataclass(**kwargs)
+
+@compat_dataclass(slots=True)
 class TrainerConfig:
     gamma: float = 0.99
     episodes_per_batch: int = 4

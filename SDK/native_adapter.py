@@ -227,3 +227,89 @@ class NativeGameStateAdapter:
         )
         self._shadow.sync_public_round_state(public_state)
         self._refresh_cache()
+        operation_list = list(operations)
+        illegal = self.native.apply_operation_list(player, [_to_native_operation(operation) for operation in operation_list])
+        self._shadow.apply_operation_list(player, operation_list)
+        self._refresh_cache()
+        return [_to_python_operation(operation) for operation in illegal]
+
+    def apply_operation(self, player: int, operation: Operation) -> None:
+        self.native.apply_operation_list(player, [_to_native_operation(operation)])
+        self._shadow.apply_operation(player, operation)
+        self._refresh_cache()
+
+    def operation_income(self, player: int, operation: Operation, tower_count_hint: int | None = None) -> int:
+        return self._shadow.operation_income(player, operation, tower_count_hint)
+
+    def advance_round(self) -> None:
+        self.native.advance_round()
+        self._shadow.advance_round()
+        self._refresh_cache()
+
+    def resolve_turn(self, operations0, operations1) -> TurnResolution:
+        operations0 = list(operations0)
+        operations1 = list(operations1)
+        result = self.native.resolve_turn(
+            [_to_native_operation(operation) for operation in operations0],
+            [_to_native_operation(operation) for operation in operations1],
+        )
+        self._shadow.resolve_turn(operations0, operations1)
+        self._refresh_cache()
+        winner = int(result["winner"])
+        return TurnResolution(
+            (operations0, operations1),
+            (
+                [_to_python_operation(operation) for operation in result["illegal0"]],
+                [_to_python_operation(operation) for operation in result["illegal1"]],
+            ),
+            bool(result["terminal"]),
+            None if winner < 0 else winner,
+        )
+
+    def to_public_round_state(self) -> PublicRoundState:
+        return self._shadow.to_public_round_state()
+
+    def sync_public_round_state(self, public_state: PublicRoundState) -> None:
+        speed_lv = (
+            list(public_state.speed_lv)
+            if public_state.speed_lv is not None
+            else [base.generation_level for base in self._shadow.bases]
+        )
+        anthp_lv = (
+            list(public_state.anthp_lv)
+            if public_state.anthp_lv is not None
+            else [base.ant_level for base in self._shadow.bases]
+        )
+        weapon_cooldowns = (
+            [list(row) for row in public_state.weapon_cooldowns]
+            if public_state.weapon_cooldowns is not None
+            else [[int(value) for value in row[1:]] for row in self._shadow.weapon_cooldowns.tolist()]
+        )
+        active_effects = (
+            [list(row) for row in public_state.active_effects]
+            if public_state.active_effects is not None
+            else [
+                [
+                    int(effect.weapon_type),
+                    int(effect.player),
+                    int(effect.x),
+                    int(effect.y),
+                    int(effect.remaining_turns),
+                ]
+                for effect in self._shadow.active_effects
+            ]
+        )
+        self.native.sync_public_round_state(
+            int(public_state.round_index),
+            [list(row) for row in public_state.towers],
+            [list(row) for row in public_state.ants],
+            list(public_state.coins),
+            list(public_state.camps_hp),
+            speed_lv,
+            anthp_lv,
+            weapon_cooldowns,
+            active_effects,
+        )
+        self._shadow.sync_public_round_state(public_state)
+        self._refresh_cache()
+>>>>>>> Stashed changes

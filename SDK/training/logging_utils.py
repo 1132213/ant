@@ -100,13 +100,16 @@ class TrainingLogger:
             },
         )
         self.logger.info(
-            "batch=%s policy_loss=%.4f value_loss=%.4f entropy=%.4f eval_win_rate=%.4f samples=%s",
+            "batch=%s policy_loss=%.4f value_loss=%.4f entropy=%.4f eval_win_rate=%.4f samples=%s lr=%.6f prior_mix=%.2f value_mix=%.2f",
             batch_index,
             float(payload.get("policy_loss", 0.0)),
             float(payload.get("value_loss", 0.0)),
             float(payload.get("entropy", 0.0)),
             float(payload.get("eval_win_rate", 0.0)),
             payload.get("samples"),
+            float(payload.get("lr", 0.0)),  # <--- 加上这一行提取 lr 打印
+            float(payload.get("prior_mix", 0.0)),
+            float(payload.get("value_mix", 0.0)),
         )
 
     def log_checkpoint(self, batch_index: int, checkpoint_path: str | Path) -> None:
