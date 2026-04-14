@@ -66,6 +66,24 @@ from SDK.utils.constants import (
 )
 from SDK.backend.model import NO_MOVE, Ant, Base, Operation, Tower, WeaponEffect, default_behavior_expiry
 from SDK.utils.geometry import hex_distance, is_highland, is_path, is_valid_pos, neighbors
+from typing import NamedTuple
+
+class PublicRoundState(NamedTuple):
+    round_index: int
+    towers: list[tuple]
+    ants: list[tuple]
+    coins: tuple[int, int]
+    camps_hp: tuple[int, int]
+    speed_lv: tuple[int, int] | None
+    anthp_lv: tuple[int, int] | None
+    weapon_cooldowns: tuple[tuple[int, ...], ...]
+    active_effects: list[tuple[int, int, int, int, int]]
+
+class TurnResolution(NamedTuple):
+    operations: tuple[list[Operation], list[Operation]]
+    illegal: tuple[list[Operation], list[Operation]]
+    terminal: bool
+    winner: int | None
 
 RNG_MASK = (1 << 48) - 1
 RNG_MULTIPLIER = 25214903917

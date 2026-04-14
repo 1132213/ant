@@ -166,19 +166,81 @@ class SearchNode:
         return self.value_sum / self.visits
 
 
+class ResBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.bn2(self.conv2(x))
+        x += residual
+        return F.relu(x)
+
+
 class TorchPolicyValueNet(nn.Module):
     def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int, hidden_dim2: int):
         super().__init__()
-        self.fc1 = nn.Linear(obs_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim2)
-        self.policy_head = nn.Linear(hidden_dim2, action_dim)
-        self.value_head = nn.Linear(hidden_dim2, 1)
+        self.board_channels = 35
+        self.map_size = 19
+        self.board_flat_size = self.board_channels * self.map_size * self.map_size
+        self.stats_size = obs_dim - self.board_flat_size
+        
+        # Conv Body
+        conv_channels = 64
+        self.conv_in = nn.Conv2d(self.board_channels, conv_channels, kernel_size=3, padding=1, bias=False)
+        self.bn_in = nn.BatchNorm2d(conv_channels)
+        
+        # 4 layers of ResBlocks
+        self.res_blocks = nn.Sequential(
+            ResBlock(conv_channels),
+            ResBlock(conv_channels),
+            ResBlock(conv_channels),
+            ResBlock(conv_channels)
+        )
+        
+        # Policy Head (2 channels -> flat -> Linear)
+        self.policy_conv = nn.Conv2d(conv_channels, 2, kernel_size=1, bias=False)
+        self.policy_bn = nn.BatchNorm2d(2)
+        self.policy_flat_size = 2 * self.map_size * self.map_size
+        self.policy_fc = nn.Linear(self.policy_flat_size + self.stats_size, action_dim)
+        
+        # Value Head (1 channel -> flat -> Linear -> Linear)
+        self.value_conv = nn.Conv2d(conv_channels, 1, kernel_size=1, bias=False)
+        self.value_bn = nn.BatchNorm2d(1)
+        self.value_flat_size = 1 * self.map_size * self.map_size
+        self.value_fc1 = nn.Linear(self.value_flat_size + self.stats_size, hidden_dim2)
+        self.value_fc2 = nn.Linear(hidden_dim2, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        logits = self.policy_head(x)
-        value = torch.tanh(self.value_head(x))
+        # Unpack
+        board_flat = x[:, :self.board_flat_size]
+        stats = x[:, self.board_flat_size:]
+        
+        # Reshape board to 3D
+        board_3d = board_flat.view(-1, self.board_channels, self.map_size, self.map_size)
+        
+        # CNN Feature Extraction
+        c = F.relu(self.bn_in(self.conv_in(board_3d)))
+        c = self.res_blocks(c)
+        
+        # Policy Head
+        p = F.relu(self.policy_bn(self.policy_conv(c)))
+        p_flat = p.view(p.size(0), -1)
+        p_fused = torch.cat([p_flat, stats], dim=1)
+        logits = self.policy_fc(p_fused)
+        
+        # Value Head
+        v = F.relu(self.value_bn(self.value_conv(c)))
+        v_flat = v.view(v.size(0), -1)
+        v_fused = torch.cat([v_flat, stats], dim=1)
+        v = F.relu(self.value_fc1(v_fused))
+        value = torch.tanh(self.value_fc2(v))
+        
         return logits, value
 
 
@@ -231,16 +293,15 @@ class PolicyValueNet:
         network = cls(obs_dim=int(checkpoint["obs_dim"]), action_dim=int(checkpoint["action_dim"]), config=config)
         
         base_model = network.model.module if isinstance(network.model, nn.DataParallel) else network.model
+        state_dict = base_model.state_dict()
         
         with torch.no_grad():
-            base_model.fc1.weight.copy_(torch.from_numpy(checkpoint["w1"].T))
-            base_model.fc1.bias.copy_(torch.from_numpy(checkpoint["b1"]))
-            base_model.fc2.weight.copy_(torch.from_numpy(checkpoint["w2"].T))
-            base_model.fc2.bias.copy_(torch.from_numpy(checkpoint["b2"]))
-            base_model.policy_head.weight.copy_(torch.from_numpy(checkpoint["policy_w"].T))
-            base_model.policy_head.bias.copy_(torch.from_numpy(checkpoint["policy_b"]))
-            base_model.value_head.weight.copy_(torch.from_numpy(checkpoint["value_w"].T))
-            base_model.value_head.bias.copy_(torch.from_numpy(checkpoint["value_b"]))
+            for k in state_dict.keys():
+                if k in checkpoint:
+                    state_dict[k].copy_(torch.from_numpy(checkpoint[k]))
+                elif k == "conv_in.weight" and "w1" in checkpoint:
+                    print(f"Warning: Checkpoint {path} appears to be an old MLP format. Random weights will be used for ResNet.")
+                    break
             
         network.loaded_from = str(Path(path))
         return network
@@ -250,6 +311,9 @@ class PolicyValueNet:
         target.parent.mkdir(parents=True, exist_ok=True)
         base_model = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
         
+        state_dict = base_model.state_dict()
+        np_dict = {k: v.detach().cpu().numpy() for k, v in state_dict.items()}
+        
         np.savez(
             target,
             obs_dim=np.int64(self.obs_dim),
@@ -257,14 +321,7 @@ class PolicyValueNet:
             hidden_dim=np.int64(self.config.hidden_dim),
             hidden_dim2=np.int64(self.config.hidden_dim2),
             seed=np.int64(self.config.seed),
-            w1=base_model.fc1.weight.detach().cpu().numpy().T,
-            b1=base_model.fc1.bias.detach().cpu().numpy(),
-            w2=base_model.fc2.weight.detach().cpu().numpy().T,
-            b2=base_model.fc2.bias.detach().cpu().numpy(),
-            policy_w=base_model.policy_head.weight.detach().cpu().numpy().T,
-            policy_b=base_model.policy_head.bias.detach().cpu().numpy(),
-            value_w=base_model.value_head.weight.detach().cpu().numpy().T,
-            value_b=base_model.value_head.bias.detach().cpu().numpy(),
+            **np_dict
         )
         self.loaded_from = str(target)
 

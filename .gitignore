@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.npz
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -27,6 +28,7 @@ dist/
 # Local runtime artifacts
 replays/
 logs/
+online_matches/
 
 # Legacy local files
 _main.py

@@ -147,14 +147,17 @@ class CustomPriorGuidedMCTS(PriorGuidedMCTS):
         if enemy_danger == float('inf'): enemy_danger = 50.0
         
         line_score = (my_danger - enemy_danger) / 20.0
-        coin_score = (state.coins[player] - state.coins[1 - player]) / 200.0
+        # 因为击杀战斗蚂蚁赏金提高到 18，金币容易通胀，调整分母为 300
+        coin_score = (state.coins[player] - state.coins[1 - player]) / 300.0
         
         my_towers = state.towers_of(player)
         enemy_towers = state.towers_of(1 - player)
         
         def eval_tower(t):
             front_bonus = t.x / 10.0 if player == 0 else (30 - t.x) / 10.0
-            return (t.level + 1) * 3.0 + front_bonus
+            # 加入残血考量，闪电风暴有细碎伤害，满血和残血的塔价值不同
+            hp_ratio = t.hp / float(t.max_hp if hasattr(t, 'max_hp') else 15.0)
+            return ((t.level + 1) * 3.0 + front_bonus) * (0.5 + 0.5 * hp_ratio)
             
         my_tower_score = sum(eval_tower(t) for t in my_towers)
         enemy_tower_score = sum(eval_tower(t) for t in enemy_towers)
@@ -236,8 +239,15 @@ class CustomPriorGuidedMCTS(PriorGuidedMCTS):
         for action_index in self._branch_indices(node.priors, action_bundles, limit):
             child_state = node.state.clone()
             bundle = action_bundles[action_index]
-            # 加速：禁用预测敌方动作，默认敌方 hold
-            enemy_bundle = ActionBundle(name="hold", score=0.0, tags=("noop",))
+            # 加速：使用快速启发式预测敌方动作，取代默认的 hold
+            enemy_player = 1 - node.player
+            try:
+                from AI.custom_utils import get_fast_heuristic_enemy_action
+                enemy_action_name, enemy_ops = get_fast_heuristic_enemy_action(node.state, enemy_player)
+                enemy_bundle = ActionBundle(name=enemy_action_name, score=0.0, tags=("predicted",), operations=enemy_ops)
+            except ImportError:
+                enemy_bundle = ActionBundle(name="hold", score=0.0, tags=("noop",))
+                
             if node.player == 0:
                 child_state.resolve_turn(bundle.operations, enemy_bundle.operations)
             else:
@@ -460,6 +470,8 @@ class CustomAlphaZeroSelfPlayTrainer(AlphaZeroSelfPlayTrainer):
             # 动态更新 config 中的 lr 以让 update_from_batch 使用最新的 lr
             self.config.learning_rate = current_lr
             metrics = self.update_from_batch(merged)
+            # 使用真实对战的 Value 作为 mean_target_value 并记录
+            metrics["mean_target_value"] = float(np.mean(merged.values))
             
             # ---------------------------------------------------------
             # 自适应调度 (Adaptive Scheduling)
@@ -528,6 +540,27 @@ class CustomAlphaZeroSelfPlayTrainer(AlphaZeroSelfPlayTrainer):
             # --- 增加控制台日志输出 ---
             print(f"[Batch {batch_index:03d}] P-Loss: {policy_loss:.4f} | V-Loss: {value_loss:.4f} | Target: {mean_target:.4f} | LR: {current_lr:.2e} | P-Mix: {current_prior_mix:.2f} | V-Mix: {current_value_mix:.2f}")
             
+            # 聚合动作统计并输出
+            total_actions = 0
+            aggregated_action_stats = {}
+            for summary in episode_summaries:
+                if summary.action_stats:
+                    for action_name, count in summary.action_stats.items():
+                        aggregated_action_stats[action_name] = aggregated_action_stats.get(action_name, 0) + count
+                        total_actions += count
+            
+            if total_actions > 0:
+                # 对动作出现次数降序排序
+                sorted_actions = sorted(aggregated_action_stats.items(), key=lambda item: item[1], reverse=True)
+                stats_str_list = [f"{name}({count/total_actions*100:.1f}%)" for name, count in sorted_actions[:10]] # 只打印前 10 高频动作
+                action_stats_str = ', '.join(stats_str_list)
+                print(f"  └─ Action Stats: {action_stats_str}")
+                # 把字符串放入 metrics，交给 logger 记录到 train.log
+                metrics["action_stats_str"] = action_stats_str
+                # 也可以把前五动作记入 metrics 供 Tensorboard / json logger 记录
+                for idx, (name, count) in enumerate(sorted_actions[:5]):
+                    metrics[f"top_{idx+1}_action_ratio"] = count / total_actions
+            
             if self.logger is not None:
                 self.logger.log_batch_metrics(batch_index=batch_index, payload=metrics)
                 self.logger.log_checkpoint(batch_index=batch_index, checkpoint_path=checkpoint_path)
@@ -543,12 +576,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=50, help="MCTS iterations per decision.")
     parser.add_argument("--max-depth", type=int, default=5, help="Search depth in whole-turn plies.")
     parser.add_argument("--max-rounds", type=int, default=512, help="Hard cap for each self-play match.")
-    parser.add_argument("--temp-drop", type=int, default=256, help="Round to drop temperature.")
+    parser.add_argument("--temp-drop", type=int, default=100, help="Round to drop temperature.")
     parser.add_argument("--seed", type=int, default=42, help="Base seed for search and environment resets.")
     parser.add_argument("--max-actions", type=int, default=96, help="Candidate action budget exposed by the env.")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Shared SGD step size for the network.")
     parser.add_argument("--prior-mix", type=float, default=0.5, help="Blend ratio of learned priors against heuristics.")
     parser.add_argument("--value-mix", type=float, default=0.5, help="Blend ratio of learned value against heuristics.")
+    # 增加 Dirichlet 噪声以加强网络前期的探索
+    parser.add_argument("--dirichlet-alpha", type=float, default=0.3, help="Dirichlet noise alpha.")
     parser.add_argument("--evaluation-episodes", type=int, default=2, help="Number of games to evaluate against heuristic per batch (0 to skip).")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/ai_alphazero_latest.npz", help="Path to save the latest checkpoint.")
     parser.add_argument("--resume-from", type=str, default=None, help="Path to a checkpoint (.npz) to resume training from.")
@@ -587,6 +622,7 @@ def main() -> None:
         max_depth=args.max_depth,
         prior_mix=args.prior_mix,
         value_mix=args.value_mix,
+        dirichlet_alpha=args.dirichlet_alpha,
         seed=args.seed,
         max_rounds=args.max_rounds,
         temperature_drop_round=args.temp_drop,

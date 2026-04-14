@@ -215,19 +215,20 @@ class AlphaZeroAgent(BaseAgent):
             if my_danger == float('inf'): my_danger = 50.0
             if enemy_danger == float('inf'): enemy_danger = 50.0
             
-            line_score = (my_danger - enemy_danger) / 10.0
-            coin_score = (node_state.coins[node_player] - node_state.coins[enemy_player]) / 100.0
+            line_score = (my_danger - enemy_danger) / 20.0
+            coin_score = (node_state.coins[node_player] - node_state.coins[enemy_player]) / 300.0
             
             my_towers = node_state.towers_of(node_player)
             enemy_towers = node_state.towers_of(enemy_player)
             
             def eval_tower(t):
                 front_bonus = t.x / 10.0 if node_player == 0 else (30 - t.x) / 10.0
-                return (t.level + 1) * 3.0 + front_bonus
+                hp_ratio = t.hp / float(t.max_hp if hasattr(t, 'max_hp') else 15.0)
+                return ((t.level + 1) * 3.0 + front_bonus) * (0.5 + 0.5 * hp_ratio)
                 
             my_tower_score = sum(eval_tower(t) for t in my_towers)
             enemy_tower_score = sum(eval_tower(t) for t in enemy_towers)
-            tower_score = (my_tower_score - enemy_tower_score) / 10.0
+            tower_score = (my_tower_score - enemy_tower_score) / 15.0
             
             total_score = line_score + coin_score + tower_score
             
@@ -237,9 +238,9 @@ class AlphaZeroAgent(BaseAgent):
             if len(custom_heuristic_value._score_history) > 1000:
                 custom_heuristic_value._score_history.pop(0)
                 
-            dynamic_scale = 1.5
+            dynamic_scale = 3.0
             if len(custom_heuristic_value._score_history) > 100:
-                dynamic_scale = max(0.5, np.percentile(custom_heuristic_value._score_history, 90))
+                dynamic_scale = max(0.5, float(np.percentile(custom_heuristic_value._score_history, 90)))
                 
             return float(np.tanh(total_score / dynamic_scale)) * 0.95
 

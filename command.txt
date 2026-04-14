@@ -1,52 +1,6 @@
 python tools/setup_native.py build_ext --inplace
 
-
-CUDA_VISIBLE_DEVICES="9" python SDK/train_alphazero_custom.py --batches 20 --episodes 10 --iterations 64 --max-rounds 512 --prefer-native-backend --evaluation-episodes 0
-
-CUDA_VISIBLE_DEVICES="9" python SDK/train_alphazero_custom.py \
---batches 20 \
---workers 8 \
---episodes 16 \
---iterations 64 \
---max-rounds 512 \
---prefer-native-backend \
---evaluation-episodes 0
-
-
-python SDK/train_alphazero_custom.py `
---batches 20 `
---workers 4 `
---episodes 12 `
---iterations 64 `
---max-rounds 512 `
---prefer-native-backend `
---evaluation-episodes 0
-
-CUDA_VISIBLE_DEVICES="9" python SDK/train_alphazero_custom.py \
---batches 20 \
---workers 8 \
---episodes 16 \
---iterations 64 \
---max-rounds 512 \
---prefer-native-backend \
---evaluation-episodes 0 \
---resume-from /home/wubaiting/Ant-Game/checkpoints/ai_alphazero_latest.npz \
---start-batch 20 \
---save-interval 5
-
 CUDA_VISIBLE_DEVICES="8" python tools/train_from_replays.py --replays-dir replays_online --epochs 5 --lr 0.0001 --resume checkpoints/ai_alphazero_latest.npz --save-path checkpoints/ai_alphazero_sl_finetuned.npz
-
-CUDA_VISIBLE_DEVICES="8" python SDK/train_alphazero_custom.py \
- --batches 50 \
- --workers 8 \
- --episodes 16 \
- --iterations 64 \
- --max-rounds 512 \
- --prefer-native-backend \
- --checkpoint "checkpoints/ai_alphazero_sl_rl_latest.npz" \
- --resume-from "checkpoints/ai_alphazero_sl_finetuned.npz" \
- --start-batch 50 \
- --save-interval 10 \
  --evaluation-episodes 0
 
 python tools/fetch_replays.py
@@ -56,22 +10,41 @@ python AI/package_ai.py alphazero
 
 python SDK/train_alphazero_custom.py --batches 1 --episodes 2 --iterations 16 --max-rounds 512 --prefer-native-backend --evaluation-episodes 0   --resume-from checkpoints/ai_alphazero_latest.npz --start-batch 5
 
+python tools/local_player.py online_matches/7782466.json
+
+
+
+CUDA_VISIBLE_DEVICES="1" python SDK/train_alphazero_custom.py \
+ --batches 50 \
+ --workers 16 \
+ --episodes 16 \
+ --iterations 64 \
+ --max-rounds 512 \
+ --prefer-native-backend \
+ --prior-mix 0.1 \
+ --value-mix 0.1 \
+ --learning-rate 1e-3 \
+ --dirichlet-alpha 0.35 \
+ --temp-drop 150 \
+ --checkpoint "checkpoints/ai_alphazero_scratch_latest.npz" \
+ --save-interval 10 \
+ --evaluation-episodes 0
 
 
 
 CUDA_VISIBLE_DEVICES="8" python SDK/train_alphazero_custom.py \
  --batches 50 \
- --workers 8 \
+ --workers 16 \
  --episodes 16 \
  --iterations 64 \
  --max-rounds 512 \
  --prefer-native-backend \
- --prior-mix 0.25 \
+ --prior-mix 0.50 \
  --learning-rate 1e-4 \
+ --dirichlet-alpha 0.2 \
+ --temp-drop 50 \
  --checkpoint "checkpoints/ai_alphazero_sl_rl_v2_latest.npz" \
  --resume-from "checkpoints/ai_alphazero_sl_finetuned.npz" \
  --start-batch 51 \
  --save-interval 10 \
  --evaluation-episodes 0
-
-CUDA_VISIBLE_DEVICES="9" python SDK/train_alphazero_custom.py   --batches 30   --workers 16   --episodes 16   --iterations 64   --max-rounds 512   --prefer-native-backend   --evaluation-episodes 0   --resume-from checkpoints/ai_alphazero_latest.npz   --start-batch 30   --prior-mix 0.5   --value-mix 0.5   --learning-rate 1e-4

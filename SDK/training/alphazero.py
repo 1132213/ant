@@ -99,6 +99,7 @@ class EpisodeSummary:
     reward_player_1: float
     outcome_player_0: float
     outcome_player_1: float
+    action_stats: dict[str, int] = None
 
 
 class AlphaZeroSelfPlayTrainer:
@@ -186,6 +187,7 @@ class AlphaZeroSelfPlayTrainer:
             observations, infos = env.reset(seed=seed)
             traces = {agent: [] for agent in env.possible_agents}
             total_reward = {agent: 0.0 for agent in env.possible_agents}
+            action_stats = {}
             rounds = 0
             while env.agents and rounds < self.config.max_rounds:
                 actions = {}
@@ -198,6 +200,11 @@ class AlphaZeroSelfPlayTrainer:
                         temperature=self._temperature_for_round(env.state.round_index),
                         add_root_noise=True,
                     )
+                    
+                    # 记录动作类型统计
+                    action_name = result.bundle.name
+                    action_stats[action_name] = action_stats.get(action_name, 0) + 1
+                    
                     current = observations[agent_name]
                     traces[agent_name].append(
                         SelfPlaySample(
@@ -246,6 +253,7 @@ class AlphaZeroSelfPlayTrainer:
                 reward_player_1=round(total_reward["player_1"], 4),
                 outcome_player_0=round(player_targets["player_0"], 4),
                 outcome_player_1=round(player_targets["player_1"], 4),
+                action_stats=action_stats,
             )
             return batch, summary
         finally:

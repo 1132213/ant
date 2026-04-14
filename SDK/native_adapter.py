@@ -312,4 +312,3 @@ class NativeGameStateAdapter:
         )
         self._shadow.sync_public_round_state(public_state)
         self._refresh_cache()
->>>>>>> Stashed changes

@@ -111,6 +111,10 @@ class TrainingLogger:
             float(payload.get("prior_mix", 0.0)),
             float(payload.get("value_mix", 0.0)),
         )
+        
+        # 将 Action Stats 输出到 logger
+        if "action_stats_str" in payload:
+            self.logger.info("batch=%s action_stats=%s", batch_index, payload["action_stats_str"])
 
     def log_checkpoint(self, batch_index: int, checkpoint_path: str | Path) -> None:
         payload = {

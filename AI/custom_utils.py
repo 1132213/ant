@@ -77,15 +77,12 @@ def get_frontline_strategic_slots(state: BackendState, player: int, status: str)
     my_base_x, my_base_y = get_base_pos(player)
     enemy_base_x, enemy_base_y = get_base_pos(1 - player)
     
-    if status == 'DEFEND':
-        # 按照离我方基地由近到远排序
-        slots.sort(key=lambda pos: hex_distance(pos[0], pos[1], my_base_x, my_base_y))
-    elif status == 'ATTACK':
+    if status == 'ATTACK':
         # 按照离敌方基地由近到远排序（往前线压）
         slots.sort(key=lambda pos: hex_distance(pos[0], pos[1], enemy_base_x, enemy_base_y))
     else:
-        # BALANCED 状态，利用威胁热力图找到最需要防守的区域
-        # 我们计算全图威胁热力图，选取当前格子周围的威胁值作为建塔优先级
+        # DEFEND 和 BALANCED 状态，利用威胁热力图找到最需要防守的前线交火区域
+        # 移除原先后场建塔逻辑，确保在交战前线建塔
         heatmap = calculate_threat_heatmap(state, player, radius=3)
         slots.sort(key=lambda pos: heatmap.get(pos, 0.0), reverse=True)
         
@@ -146,6 +143,7 @@ def calculate_threat_heatmap(state: BackendState, player: int, radius: int = 3) 
         return _heatmap_cache[player]
 
     enemy_ants = get_enemy_ants(state, player)
+    enemy_towers = get_enemy_towers(state, player)
     heatmap = {}
     
     my_base_x, my_base_y = get_base_pos(player)
@@ -163,8 +161,11 @@ def calculate_threat_heatmap(state: BackendState, player: int, radius: int = 3) 
         # 3. 速度因子：跑得快的威胁更大
         speed_weight = 1.0 + (ant.speed / 10.0)
         
+        # 战斗蚂蚁高额赏金：给予战斗蚂蚁极高的威胁权重，吸引闪电风暴
+        combat_bonus = 3.0 if getattr(ant, 'kind', 0) == 1 else 1.0
+        
         # 单只蚂蚁的综合威胁分
-        ant_threat = distance_weight * speed_weight * (1.0 + hp_weight)
+        ant_threat = distance_weight * speed_weight * (1.0 + hp_weight) * combat_bonus
         
         # 使用预先计算好的六边形偏移量可以略微加速
         for dx in range(-radius, radius + 1):
@@ -173,6 +174,26 @@ def calculate_threat_heatmap(state: BackendState, player: int, radius: int = 3) 
                 if 0 <= nx < MAP_SIZE and 0 <= ny < MAP_SIZE:
                     if hex_distance(ant.x, ant.y, nx, ny) <= radius:
                         heatmap[(nx, ny)] = heatmap.get((nx, ny), 0.0) + ant_threat
+
+    # 将敌方防御塔加入热力图评估（用于闪电风暴等拆塔战略）
+    for tower in enemy_towers:
+        # 塔的基础威胁：等级越高，威胁越大。闪电风暴可拆塔，提高塔的权重
+        base_threat = (tower.level + 1) * 3.0
+        
+        # 拆塔残血诱惑：如果塔血量较低（特别是 <= 3 或 <= 6，容易被闪电风暴收割），增加威胁分
+        hp_ratio = tower.hp / float(tower.max_hp if hasattr(tower, 'max_hp') else 15.0)
+        vulnerability_bonus = 5.0 * (1.0 - hp_ratio)
+        if tower.hp <= 6:
+            vulnerability_bonus += 5.0
+            
+        tower_threat = base_threat + vulnerability_bonus
+        
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                nx, ny = tower.x + dx, tower.y + dy
+                if 0 <= nx < MAP_SIZE and 0 <= ny < MAP_SIZE:
+                    if hex_distance(tower.x, tower.y, nx, ny) <= radius:
+                        heatmap[(nx, ny)] = heatmap.get((nx, ny), 0.0) + tower_threat
                         
     if _heatmap_cache_turn != current_turn:
         _heatmap_cache.clear()
@@ -187,18 +208,19 @@ def get_fast_heuristic_enemy_action(state: BackendState, player: int) -> Tuple[s
     Returns a tuple of (action_name, operations_tuple) for the enemy.
     
     Logic:
-    1. Super Weapons: Check Lightning Storm (>=200), EMP (>=150), Deflector/Evasion (>=100).
+    1. Super Weapons: Check Lightning Storm (>=150), EMP (>=150), Deflector (>=100).
     2. Base Tech Upgrades: If economy is good and no immediate danger.
     3. Tower Upgrades: If there are existing towers under threat.
-    4. Build Towers: If under pressure and has >= 50 coins.
-    5. Hold: Default.
+    4. Downgrade Towers: If poor (<100 coins) and have useless backline towers.
+    5. Build Towers: If under pressure and has >= 50 coins.
+    6. Hold: Default.
     """
     from SDK.utils.constants import SuperWeaponType, OperationType
     
     status = evaluate_frontline_status(state, player)
     
     # 1. Check Super Weapons (High priority if affordable and targets exist)
-    if state.coins[player] >= 200:
+    if state.coins[player] >= 150:
         target = get_best_super_weapon_target(state, player, SuperWeaponType.LIGHTNING_STORM)
         if target:
             op = generate_super_weapon_operation(SuperWeaponType.LIGHTNING_STORM, target[0], target[1])
@@ -241,7 +263,27 @@ def get_fast_heuristic_enemy_action(state: BackendState, player: int) -> Tuple[s
                     if state.can_apply_operation(player, op):
                         return f"upgrade_{target_tower.tower_id}_{target_type.name}", (op,)
                 
-    # 4. Check Building Towers (Under pressure)
+    # 4. Check Downgrading Towers (If poor or towers are useless in the backline)
+    # 拆除/降级防御塔：当经济较低，或者后方防御塔已经没有战略价值时
+    if state.coins[player] < 100:
+        my_towers = get_my_towers(state, player)
+        if my_towers:
+            # 使用热力图评估塔的当前战略价值
+            heatmap = calculate_threat_heatmap(state, player, radius=3)
+            for t in my_towers:
+                # 如果这个塔周围没有任何威胁，且不是在前线，可以考虑卖掉
+                if heatmap.get((t.x, t.y), 0.0) < 0.5:
+                    # 距离己方基地很近但没威胁的塔，说明战线已经推远了，或者这是一个废塔
+                    my_base_x, my_base_y = get_base_pos(player)
+                    enemy_base_x, enemy_base_y = get_base_pos(1 - player)
+                    dist_to_enemy = hex_distance(t.x, t.y, enemy_base_x, enemy_base_y)
+                    # 如果离敌人基地远（比如距离大于15），且周围没威胁，则降级换钱
+                    if dist_to_enemy > 15:
+                        op = generate_downgrade_operation(t.tower_id)
+                        if state.can_apply_operation(player, op):
+                            return f"downgrade_{t.tower_id}", (op,)
+                            
+    # 5. Check Building Towers (Under pressure)
     if status in ["DEFEND", "BALANCED"] and state.coins[player] >= 50:
         slots = get_frontline_strategic_slots(state, player, status)
         if slots:
@@ -249,7 +291,7 @@ def get_fast_heuristic_enemy_action(state: BackendState, player: int) -> Tuple[s
             op = generate_build_operation(best_slot[0], best_slot[1])
             return f"build_{best_slot[0]}_{best_slot[1]}", (op,)
             
-    # 5. Default to hold
+    # 6. Default to hold
     return "hold", ()
 
 def get_best_super_weapon_target(state: BackendState, player: int, weapon_type: SuperWeaponType) -> Optional[Tuple[int, int]]:
@@ -265,11 +307,12 @@ def get_best_super_weapon_target(state: BackendState, player: int, weapon_type: 
         return None
 
     if weapon_type == SuperWeaponType.LIGHTNING_STORM:
-        # 闪电风暴：寻找敌方威胁（蚂蚁）最集中的区域
+        # 闪电风暴：寻找敌方威胁（战斗蚂蚁+高价值防御塔）最集中的区域
         heatmap = calculate_threat_heatmap(state, player, radius=3)
         if not heatmap:
             return None
         best_pos = max(heatmap.items(), key=lambda item: item[1])
+        # 提高释放阈值，确保砸在真正有价值的目标上（高等级塔或战斗蚂蚁群）
         if best_pos[1] < 3.0:  
             return None
         return best_pos[0]
@@ -300,7 +343,7 @@ def get_best_super_weapon_target(state: BackendState, player: int, weapon_type: 
             return best_pos
 
     elif weapon_type == SuperWeaponType.DEFLECTOR or weapon_type == SuperWeaponType.EMERGENCY_EVASION:
-        # 引力护盾 / 紧急回避：保护我方冲锋在最前线的蚂蚁群
+        # 引力护盾 / 紧急回避：保护我方冲锋在最前线的蚂蚁群（主要保护高价值战斗蚂蚁）
         my_ants = get_my_ants(state, player)
         if not my_ants:
             return None
@@ -313,14 +356,15 @@ def get_best_super_weapon_target(state: BackendState, player: int, weapon_type: 
             saved_count = 0
             for other_ant in my_ants:
                 if hex_distance(center_ant.x, center_ant.y, other_ant.x, other_ant.y) <= 3:
-                    # 战斗蚂蚁权重大
-                    saved_count += 2 if other_ant.kind == 1 else 1
+                    # 战斗蚂蚁造价昂贵且赏金高，保护优先级极大提升
+                    saved_count += 5 if getattr(other_ant, 'kind', 0) == 1 else 1
                     
             if saved_count > max_ants_saved:
                 max_ants_saved = saved_count
                 best_pos = (center_ant.x, center_ant.y)
                 
-        if max_ants_saved >= 3 and best_pos is not None:
+        # 至少能保护 1 只战斗蚂蚁或多只工蚁才值得放
+        if max_ants_saved >= 5 and best_pos is not None:
             return best_pos
         
     return None
